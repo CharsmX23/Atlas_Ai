@@ -120,3 +120,4 @@ uvicorn main:app --reload --port 8000
 | `GET` | `/research/{job_id}` | Full job + all businesses |
 | `GET` | `/research/{job_id}/status` | Job status + stats |
 | `GET` | `/health` | `{"status":"ok","version":"1.0.0"}` |
+# test
