@@ -17,6 +17,7 @@ import {
   MoreHorizontal,
   Moon,
   Sun,
+  ShieldCheck,
 } from 'lucide-react'
 import { motion } from 'framer-motion'
 
@@ -27,6 +28,7 @@ const navItems = [
   { label: 'Knowledge graph', href: '/knowledge-graph', icon: Network },
   { label: 'Reports', href: '/reports', icon: FileText },
   { label: 'Analytics', href: '/analytics', icon: BarChart3 },
+  { label: 'Admin', href: '/admin', icon: ShieldCheck },
   { label: 'Settings', href: '/settings', icon: Settings },
 ]
 

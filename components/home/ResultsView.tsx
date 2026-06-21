@@ -8,9 +8,12 @@ import { Search, MapPin, Phone, Mail, Globe, Clock, Star, ExternalLink, ChevronD
 interface Props {
   onReset: () => void
   onNewMission: () => void
+  results?: BusinessResult[] | null
 }
 
-export function ResultsView({ onReset, onNewMission }: Props) {
+export function ResultsView({ onReset, onNewMission, results }: Props) {
+  // Use real backend results when available, otherwise fall back to mock data
+  const baseResults = results && results.length > 0 ? results : mockResults
   const [sortBy, setSortBy] = useState<'confidence' | 'rating' | 'name'>('confidence')
   const [filterStatus, setFilterStatus] = useState<'all' | 'verified' | 'partial' | 'conflict'>('all')
   const [showVerified, setShowVerified] = useState(false)
@@ -21,7 +24,7 @@ export function ResultsView({ onReset, onNewMission }: Props) {
   const [expandedEvidence, setExpandedEvidence] = useState<string | null>(null)
 
   const filtered = useMemo(() => {
-    let list = [...mockResults]
+    let list = [...baseResults]
     if (filterStatus !== 'all') list = list.filter((b) => b.verification_status === filterStatus)
     if (showVerified) list = list.filter((b) => b.verification_status === 'verified')
     if (showConflicts) list = list.filter((b) => b.verification_status === 'conflict')
@@ -37,7 +40,7 @@ export function ResultsView({ onReset, onNewMission }: Props) {
       return a.business_name.localeCompare(b.business_name)
     })
     return list
-  }, [sortBy, filterStatus, showVerified, showConflicts, showHasWebsite, showHasPhone, nameFilter])
+  }, [baseResults, sortBy, filterStatus, showVerified, showConflicts, showHasWebsite, showHasPhone, nameFilter])
 
   return (
     <div className="flex flex-col h-full">

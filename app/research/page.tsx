@@ -1,33 +1,208 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useCallback, useRef, useEffect } from 'react'
 import { IdleHero } from '@/components/home/IdleHero'
 import { MissionControl } from '@/components/home/MissionControl'
 import { BottomSearchBar } from '@/components/mission/BottomSearchBar'
-import { Sidebar } from '@/components/layout/Sidebar'
+import { AppLayout } from '@/components/layout/AppLayout'
 import { motion } from 'framer-motion'
+import { supabase } from '@/lib/supabase'
+import type { BusinessResult, LiveEvent } from '@/components/home/constants'
+import type { RealtimeChannel } from '@supabase/supabase-js'
 
 type Phase = 'idle' | 'running' | 'complete'
+
+// ── Map a flat backend business row to the BusinessResult display type ─────────
+// Fills every optional field with a safe default so the UI never crashes.
+function toBusinessResult(b: Record<string, unknown>, index: number): BusinessResult {
+  const urls: string[] = Array.isArray(b.source_urls)
+    ? (b.source_urls as string[])
+    : []
+
+  const asStr = (v: unknown): string => (typeof v === 'string' ? v : '')
+  const asNum = (v: unknown, fallback: number): number =>
+    typeof v === 'number' ? v : fallback
+  const asArr = (v: unknown): string[] =>
+    Array.isArray(v) ? (v as string[]) : []
+
+  return {
+    rank: asNum(b.rank, index + 1),
+    business_name: asStr(b.business_name) || 'Unknown',
+    address: asStr(b.address),
+    phone: {
+      value: asStr(b.phone),
+      sources: asNum(b.source_count, 1),
+      links: urls,
+    },
+    email: { value: asStr(b.email), sources: 0 },
+    website: {
+      value: asStr(b.website),
+      sources: asNum(b.source_count, 1),
+    },
+    working_hours: { value: asStr(b.working_hours), sources: 0 },
+    rating: asStr(b.rating),
+    review_count: asStr(b.review_count),
+    services: asArr(b.services),
+    specialties: asArr(b.specialties),
+    license_information: null,
+    certifications: asArr(b.certifications),
+    awards: asArr(b.awards),
+    social_profiles: asArr(b.social_profiles),
+    images_urls: asArr(b.images_urls),
+    source_urls: Object.fromEntries(urls.map((u, i) => [`source_${i + 1}`, u])),
+    confidence_score: asNum(b.confidence_score, 0.72),
+    verification_status:
+      (asStr(b.verification_status) as BusinessResult['verification_status']) || 'partial',
+    source_count: asNum(b.source_count, 1),
+  }
+}
 
 export default function Research() {
   const [phase, setPhase] = useState<Phase>('idle')
   const [query, setQuery] = useState('')
   const [mode, setMode] = useState<'deep' | 'fast'>('deep')
+  const [realResults, setRealResults] = useState<BusinessResult[] | null>(null)
+  const [liveEvents, setLiveEvents] = useState<LiveEvent[]>([])
 
+  // Refs for cleanup — never trigger re-renders
+  const channelRef = useRef<RealtimeChannel | null>(null)
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const jobIdRef = useRef<string | null>(null)
+
+  // ── Cleanup on unmount ──────────────────────────────────────────────────────
+  useEffect(() => {
+    return () => {
+      _cleanup()
+    }
+  }, [])
+
+  const _cleanup = () => {
+    if (channelRef.current) {
+      supabase.removeChannel(channelRef.current)
+      channelRef.current = null
+    }
+    if (pollRef.current) {
+      clearInterval(pollRef.current)
+      pollRef.current = null
+    }
+  }
+
+  // ── Subscribe to Supabase Realtime for a given job ──────────────────────────
+  const subscribeToJob = (jobId: string, backendUrl: string) => {
+    const channel = supabase
+      .channel(`research:${jobId}`)
+      // 1. Live timeline: each new agent_event row streams to the timeline
+      .on(
+        'postgres_changes',
+        {
+          event: 'INSERT',
+          schema: 'public',
+          table: 'agent_events',
+          filter: `job_id=eq.${jobId}`,
+        },
+        (payload) => {
+          const ev = payload.new as LiveEvent
+          setLiveEvents((prev) => [...prev, ev])
+        }
+      )
+      // 2. Completion signal: research_jobs.status = 'complete'
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'research_jobs',
+          filter: `id=eq.${jobId}`,
+        },
+        async (payload) => {
+          if (payload.new.status === 'complete') {
+            // Fetch the final business list
+            const { data } = await supabase
+              .from('businesses')
+              .select('*')
+              .eq('job_id', jobId)
+              .order('rank')
+            if (data && data.length > 0) {
+              setRealResults(
+                (data as Record<string, unknown>[]).map(toBusinessResult)
+              )
+            }
+            // Let the animation finish its last frame before forcing complete
+            setTimeout(() => setPhase('complete'), 800)
+          }
+        }
+      )
+      .subscribe()
+
+    channelRef.current = channel
+
+    // ── Fallback: poll every 3s in case Realtime is not enabled yet ────────
+    pollRef.current = setInterval(async () => {
+      try {
+        const res = await fetch(`${backendUrl}/research/${jobId}`)
+        const { job, businesses } = await res.json()
+        if (job?.status === 'complete' && Array.isArray(businesses) && businesses.length > 0) {
+          clearInterval(pollRef.current!)
+          pollRef.current = null
+          setRealResults(
+            (businesses as Record<string, unknown>[]).map(toBusinessResult)
+          )
+          setTimeout(() => setPhase('complete'), 800)
+        }
+      } catch {
+        // backend unreachable during poll — ignore
+      }
+    }, 3000)
+  }
+
+  // ── Start mission ───────────────────────────────────────────────────────────
   const startMission = (q: string) => {
     setQuery(q)
     setPhase('running')
+    setRealResults(null)
+    setLiveEvents([])
+    _cleanup()
+
+    const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL
+    if (!backendUrl) {
+      // No backend configured — UI plays mock animation; graceful demo mode
+      return
+    }
+
+    fetch(`${backendUrl}/research`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query: q, mode }),
+    })
+      .then((r) => {
+        if (!r.ok) throw new Error(`Backend returned ${r.status}`)
+        return r.json()
+      })
+      .then(({ job_id }: { job_id?: string }) => {
+        if (!job_id) return
+        jobIdRef.current = job_id
+        subscribeToJob(job_id, backendUrl)
+      })
+      .catch(() => {
+        // Backend unreachable — fall back to mock animation silently
+      })
   }
 
   const resetMission = () => {
+    _cleanup()
+    jobIdRef.current = null
     setQuery('')
     setPhase('idle')
+    setRealResults(null)
+    setLiveEvents([])
   }
 
+  // Stable callback — avoids re-triggering the MissionControl timer effect
+  const handleComplete = useCallback(() => setPhase('complete'), [])
+
   return (
-    <div className="flex h-screen" style={{ background: 'var(--bg)' }}>
-      <Sidebar />
-      <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
+    <AppLayout>
+      <div className="flex-1 flex flex-col min-w-0 overflow-hidden h-full">
         <div className="flex-1 relative overflow-hidden">
           {phase === 'idle' ? (
             <motion.div
@@ -52,13 +227,16 @@ export default function Research() {
               <MissionControl
                 query={query}
                 phase={phase}
-                onComplete={() => setPhase('complete')}
+                onComplete={handleComplete}
                 onReset={resetMission}
+                realResults={realResults}
+                liveEvents={liveEvents}
               />
             </motion.div>
           )}
         </div>
-        {/* Only show search bar when NOT running — instant remove, no animation */}
+
+        {/* Search bar — hidden while research is actively running */}
         {phase !== 'running' && (
           <motion.div
             key="searchbar"
@@ -80,6 +258,6 @@ export default function Research() {
           </motion.div>
         )}
       </div>
-    </div>
+    </AppLayout>
   )
 }

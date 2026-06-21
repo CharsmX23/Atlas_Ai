@@ -6,6 +6,16 @@ export interface TimelineEvent {
   progress?: number
 }
 
+/** Real-time event row from Supabase agent_events table */
+export interface LiveEvent {
+  id: string
+  job_id: string
+  title: string
+  subtitle: string
+  status: 'done' | 'running' | 'warn' | 'active'
+  created_at: string
+}
+
 export const TIMELINE_SCRIPT: TimelineEvent[] = [
   { t: 0,  dot: 'done', title: 'Initializing Atlas', sub: 'Loading research engine' },
   { t: 1,  dot: 'done', title: 'Memory loaded', sub: '1,247 cached businesses available' },

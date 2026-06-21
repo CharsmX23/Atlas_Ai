@@ -4,7 +4,7 @@ import { useEffect, useState, useRef } from 'react'
 import { TIMELINE_SCRIPT, AGENT_SCRIPT } from './constants'
 import { ResultsView } from './ResultsView'
 import { MissionStatusBar } from '@/components/mission/MissionStatusBar'
-import type { TimelineEvent, AgentDef } from './constants'
+import type { TimelineEvent, AgentDef, BusinessResult, LiveEvent } from './constants'
 import { Check, X, AlertTriangle } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 
@@ -13,48 +13,91 @@ interface Props {
   phase: 'running' | 'complete'
   onComplete: () => void
   onReset: () => void
+  realResults?: BusinessResult[] | null
+  /** Live events from Supabase Realtime — when present, drives the timeline instead of the mock script */
+  liveEvents?: LiveEvent[]
 }
 
-export function MissionControl({ query, phase, onComplete, onReset }: Props) {
+export function MissionControl({ query, phase, onComplete, onReset, realResults, liveEvents = [] }: Props) {
   const [currentStep, setCurrentStep] = useState(1)
   const [elapsed, setElapsed] = useState(0)
   const [showResults, setShowResults] = useState(false)
   const timelineRef = useRef<HTMLDivElement>(null)
+  const completedRef = useRef(false)
+
+  // Live mode: real Supabase events are driving the timeline
+  const isLive = liveEvents.length > 0
 
   const agentsDone = AGENT_SCRIPT.filter((a) => currentStep >= a.endAt).length
   const totalAgents = AGENT_SCRIPT.length
-  const progress = Math.min(100, (currentStep / TIMELINE_SCRIPT.length) * 100)
-  const resultsFound = Math.round((currentStep / TIMELINE_SCRIPT.length) * 47)
+  // In live mode derive progress from event count; in mock mode from step counter
+  const progress = isLive
+    ? Math.min(100, (liveEvents.length / 18) * 100)
+    : Math.min(100, (currentStep / TIMELINE_SCRIPT.length) * 100)
+  const resultsFound = Math.round(progress / 100 * 47)
 
-  // Elapsed timer
+  // Elapsed timer — always running while research is in progress
   useEffect(() => {
     if (phase === 'complete') return
     const t = setInterval(() => setElapsed((e) => e + 1), 1000)
     return () => clearInterval(t)
   }, [phase])
 
-  // Advance timeline
+  // Mock animation — only runs when no live events are available
   useEffect(() => {
-    if (phase === 'complete') return
+    if (isLive || phase === 'complete') return
     if (currentStep >= TIMELINE_SCRIPT.length) {
       const t = setTimeout(() => {
-        onComplete()
-        setTimeout(() => setShowResults(true), 1200)
+        if (!completedRef.current) {
+          completedRef.current = true
+          onComplete()
+          setTimeout(() => setShowResults(true), 1200)
+        }
       }, 800)
       return () => clearTimeout(t)
     }
     const t = setTimeout(() => setCurrentStep((s) => s + 1), 1500)
     return () => clearTimeout(t)
-  }, [currentStep, phase, onComplete])
+  }, [currentStep, phase, onComplete, isLive])
 
-  // Auto-scroll timeline
+  // Live mode: detect "Mission complete" event → transition to results
+  useEffect(() => {
+    if (!isLive || completedRef.current) return
+    const last = liveEvents[liveEvents.length - 1]
+    if (last?.title === 'Mission complete') {
+      completedRef.current = true
+      onComplete()
+      setTimeout(() => setShowResults(true), 1200)
+    }
+  }, [liveEvents, isLive, onComplete])
+
+  // Auto-scroll timeline whenever new content appears
   useEffect(() => {
     if (timelineRef.current) {
       timelineRef.current.scrollTop = timelineRef.current.scrollHeight
     }
-  }, [currentStep])
+  }, [currentStep, liveEvents.length])
 
-  const visibleEvents = TIMELINE_SCRIPT.slice(0, currentStep)
+  // Trigger showResults when phase flips to 'complete' from outside (Realtime path)
+  useEffect(() => {
+    if (phase === 'complete' && !showResults) {
+      setTimeout(() => setShowResults(true), 400)
+    }
+  }, [phase, showResults])
+
+  // Build the visible timeline:
+  // • Live mode  → convert LiveEvent[] to TimelineEvent[]
+  // • Mock mode  → slice TIMELINE_SCRIPT to currentStep
+  const visibleEvents: TimelineEvent[] = isLive
+    ? liveEvents.map((ev, i) => ({
+        t: i,
+        dot: ev.status === 'running' ? 'active'
+           : ev.status === 'warn'    ? 'warn'
+           : 'done',
+        title: ev.title,
+        sub: ev.subtitle || undefined,
+      }))
+    : TIMELINE_SCRIPT.slice(0, currentStep)
 
   if (showResults) {
     return (
@@ -71,7 +114,11 @@ export function MissionControl({ query, phase, onComplete, onReset }: Props) {
           verifiedCount={47}
         />
         <div className="flex-1 min-h-1 overflow-hidden">
-          <ResultsView onReset={onReset} onNewMission={() => { setShowResults(false); onReset() }} />
+          <ResultsView
+            onReset={onReset}
+            onNewMission={() => { setShowResults(false); onReset() }}
+            results={realResults}
+          />
         </div>
       </div>
     )

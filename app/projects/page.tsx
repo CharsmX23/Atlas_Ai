@@ -25,7 +25,7 @@ export default function Projects() {
           </button>
         </div>
 
-        {projects.length === 1 ? (
+        {projects.length === 0 ? (
           <div className="flex items-center justify-center h-[400px]">
             <div className="text-center">
               <FolderOpen size={40} className="mx-auto mb-4" strokeWidth={1.5} style={{ color: 'var(--text-faint)' }} />

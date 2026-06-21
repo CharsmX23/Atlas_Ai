@@ -10,7 +10,7 @@ const config: Config = {
   theme: {
     extend: {
       fontFamily: {
-        'serif-display': ['var(--font-serif-display)', 'Georgia', 'serif'],
+        'serif-display': ['var(--font-display)', 'Georgia', 'serif'],
         'sans': ['var(--font-sans)', 'Inter', 'sans-serif'],
       },
       colors: {
