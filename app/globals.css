@@ -1,0 +1,147 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  /* ── DARK MODE (default) ── */
+  :root {
+    --bg:              #09090B;
+    --surface-panel:   #111113;
+    --surface-card:    #18181B;
+    --surface-card-hover: #1F1F23;
+    --border:          #27272A;
+    --border-hi:       #3F3F46;
+
+    --text-primary:    #FAFAFA;
+    --text-secondary:  #A1A1AA;
+    --text-muted:      #71717A;
+    --text-faint:      #3F3F46;
+
+    --success:         #22C55E;
+    --warning:         #F59E0B;
+    --error:           #EF4444;
+
+    --accent:          #FAFAFA;
+    --accent-bg:       rgba(255,255,255,0.06);
+    --accent-text:     #09090B;
+
+    --background: 0 0% 100%;
+    --foreground: 0 0% 3.9%;
+    --card: 0 0% 100%;
+    --card-foreground: 0 0% 3.9%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 0 0% 3.9%;
+    --primary: 0 0% 9%;
+    --primary-foreground: 0 0% 98%;
+    --secondary: 0 0% 96.1%;
+    --secondary-foreground: 0 0% 9%;
+    --muted: 0 0% 96.1%;
+    --muted-foreground: 0 0% 45.1%;
+    --accent-shadcn: 0 0% 96.1%;
+    --accent-foreground-shadcn: 0 0% 9%;
+    --destructive: 0 84.2% 60.2%;
+    --destructive-foreground: 0 0% 98%;
+    --input: 0 0% 89.8%;
+    --ring: 0 0% 3.9%;
+    --chart-1: 12 76% 61%;
+    --chart-2: 173 58% 39%;
+    --chart-3: 197 37% 24%;
+    --chart-4: 43 74% 66%;
+    --chart-5: 27 87% 67%;
+    --radius: 0.5rem;
+  }
+
+  /* ── LIGHT MODE ── */
+  [data-theme="light"] {
+    --bg:              #FAFAFA;
+    --surface-panel:   #F4F4F5;
+    --surface-card:    #FFFFFF;
+    --surface-card-hover: #F4F4F5;
+    --border:          #E4E4E7;
+    --border-hi:       #D4D4D8;
+
+    --text-primary:    #09090B;
+    --text-secondary:  #52525B;
+    --text-muted:      #71717A;
+    --text-faint:      #D4D4D8;
+
+    --success:         #16A34A;
+    --warning:         #D97706;
+    --error:           #DC2626;
+
+    --accent:          #18181B;
+    --accent-bg:       rgba(0,0,0,0.05);
+    --accent-text:     #FAFAFA;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    background-color: var(--bg);
+    color: var(--text-primary);
+    font-family: var(--font-sans), 'Inter', sans-serif;
+    -webkit-font-smoothing: antialiased;
+    font-feature-settings: 'ss01', 'cv11', 'tnum';
+  }
+}
+
+/* ── ANIMATIONS ── */
+@keyframes pulse-warm {
+  0%, 100% { opacity: 1; transform: scale(1); }
+  50% { opacity: 0.4; transform: scale(0.92); }
+}
+@keyframes fade-up {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes tick-pop {
+  0% { transform: scale(0) rotate(-10deg); opacity: 0; }
+  60% { transform: scale(1.2) rotate(2deg); opacity: 1; }
+  100% { transform: scale(1) rotate(0deg); opacity: 1; }
+}
+
+.animate-pulse-warm {
+  animation: pulse-warm 1.6s ease-in-out infinite;
+}
+.animate-fade-up {
+  animation: fade-up 300ms ease-out forwards;
+}
+.animate-tick-pop {
+  animation: tick-pop 300ms cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+}
+
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+::-webkit-scrollbar-track {
+  background: var(--surface-panel);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--border);
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--border-hi);
+}
+
+/* ── HIDE BADGES ── */
+[data-testid="lovable-badge"],
+[data-testid="bolt-badge"],
+a[href*="lovable.dev"],
+a[href*="bolt.new"] {
+  display: none !important;
+  pointer-events: none !important;
+}
+
+@layer utilities {
+  .font-variant-tnum {
+    font-variant-numeric: tabular-nums;
+  }
+  .font-mono-ui {
+    font-family: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace;
+  }
+}
