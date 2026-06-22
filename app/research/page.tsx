@@ -227,7 +227,7 @@ export default function Research() {
                 onComplete={handleComplete}
                 onReset={resetMission}
                 onNewMission={startMission}
-                realResults={realResults.length > 0 ? realResults : null}
+                realResults={realResults}
                 liveEvents={liveEvents}
               />
             </motion.div>

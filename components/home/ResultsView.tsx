@@ -1,7 +1,7 @@
 'use client'
 
 import { useState, useMemo } from 'react'
-import { mockResults, type BusinessResult } from './constants'
+import type { BusinessResult } from './constants'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Search, MapPin, Phone, Mail, Globe, Clock, Star, ExternalLink, ChevronDown, ChevronUp, Check, AlertTriangle, Shield, X } from 'lucide-react'
 
@@ -12,8 +12,7 @@ interface Props {
 }
 
 export function ResultsView({ onReset, onNewMission, results }: Props) {
-  // Use real backend results when available, otherwise fall back to mock data
-  const baseResults = results && results.length > 0 ? results : mockResults
+  const baseResults: BusinessResult[] = results ?? []
   const [sortBy, setSortBy] = useState<'confidence' | 'rating' | 'name'>('confidence')
   const [filterStatus, setFilterStatus] = useState<'all' | 'verified' | 'partial' | 'conflict'>('all')
   const [showVerified, setShowVerified] = useState(false)
@@ -101,14 +100,59 @@ export function ResultsView({ onReset, onNewMission, results }: Props) {
       {/* Results scroll area */}
       <div className="flex-1 overflow-y-auto px-6 py-4">
         <div className="mx-auto space-y-3" style={{ maxWidth: '1400px' }}>
-          {filtered.map((biz) => (
-            <BusinessCard
-              key={biz.business_name}
-              biz={biz}
-              expanded={expandedEvidence === biz.business_name}
-              onToggleEvidence={() => setExpandedEvidence(expandedEvidence === biz.business_name ? null : biz.business_name)}
-            />
-          ))}
+          {filtered.length === 0 ? (
+            <div className="flex flex-col items-center justify-center py-24 gap-4">
+              {baseResults.length === 0 ? (
+                /* No backend results at all — demo mode or backend returned nothing */
+                <>
+                  <div
+                    className="w-12 h-12 rounded-full flex items-center justify-center border"
+                    style={{ background: 'var(--surface-card)', borderColor: 'var(--border)' }}
+                  >
+                    <Search size={20} strokeWidth={1.5} style={{ color: 'var(--text-faint)' }} />
+                  </div>
+                  <div className="text-center">
+                    <p className="text-[15px] font-medium mb-1" style={{ color: 'var(--text-primary)' }}>
+                      No results returned
+                    </p>
+                    <p className="text-[13px]" style={{ color: 'var(--text-muted)' }}>
+                      {process.env.NEXT_PUBLIC_BACKEND_URL
+                        ? 'The backend search returned 0 results. Try a different query.'
+                        : 'Backend not configured — set NEXT_PUBLIC_BACKEND_URL to run real searches.'}
+                    </p>
+                  </div>
+                  <button
+                    onClick={onNewMission}
+                    className="text-[13px] font-medium px-4 py-2 rounded-lg border transition"
+                    style={{ color: 'var(--text-secondary)', borderColor: 'var(--border)', background: 'var(--surface-card)' }}
+                    onMouseEnter={(e) => { e.currentTarget.style.borderColor = 'var(--border-hi)'; e.currentTarget.style.color = 'var(--text-primary)' }}
+                    onMouseLeave={(e) => { e.currentTarget.style.borderColor = 'var(--border)'; e.currentTarget.style.color = 'var(--text-secondary)' }}
+                  >
+                    New mission
+                  </button>
+                </>
+              ) : (
+                /* Results exist but all filtered out */
+                <div className="text-center">
+                  <p className="text-[15px] font-medium mb-1" style={{ color: 'var(--text-primary)' }}>
+                    No results match current filters
+                  </p>
+                  <p className="text-[13px]" style={{ color: 'var(--text-muted)' }}>
+                    Try removing some filters to see more results.
+                  </p>
+                </div>
+              )}
+            </div>
+          ) : (
+            filtered.map((biz) => (
+              <BusinessCard
+                key={biz.business_name}
+                biz={biz}
+                expanded={expandedEvidence === biz.business_name}
+                onToggleEvidence={() => setExpandedEvidence(expandedEvidence === biz.business_name ? null : biz.business_name)}
+              />
+            ))
+          )}
         </div>
       </div>
     </div>
