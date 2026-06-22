@@ -230,7 +230,7 @@ def _html_search(query: str, max_results: int, headers: dict) -> list:
 
     url = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote(query)}"
     resp = requests.get(url, headers=headers, timeout=15)
-    soup = BeautifulSoup(resp.text, "lxml")
+    soup = BeautifulSoup(resp.text, "html.parser")
 
     results = []
     for result in soup.select(".result__body")[:max_results]:
@@ -497,7 +497,7 @@ async def agent_website_detail(job_id: str, businesses: list) -> list:
                 )
                 if resp.status_code == 200:
                     from bs4 import BeautifulSoup
-                    soup = BeautifulSoup(resp.text, "lxml")
+                    soup = BeautifulSoup(resp.text, "html.parser")
                     text = soup.get_text(separator=" ")
 
                     # Phone
