@@ -43,10 +43,10 @@ export function BottomSearchBar({
 
   return (
     <div className="w-full">
-      {/* Subtle gradient fade above the bar */}
+      {/* Gradient fade — uses hsl(var(--background)) so it matches both light and dark mode */}
       <div
         className="h-12 w-full pointer-events-none"
-        style={{ background: 'linear-gradient(to top, var(--bg) 30%, transparent)' }}
+        style={{ background: 'linear-gradient(to top, hsl(var(--background)) 60%, transparent)' }}
       />
 
       {/* Bar content — normal flow, no fixed/z-index */}
