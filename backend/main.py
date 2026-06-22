@@ -1,5 +1,6 @@
 import asyncio
 import os
+import random
 import re
 from datetime import datetime
 from urllib.parse import urlparse
@@ -143,57 +144,105 @@ async def emit(job_id: str, title: str, subtitle: str = "",
 
 async def ddg_search(query: str, max_results: int = 15) -> list:
     """
-    DuckDuckGo search with retry + fallback for Railway IP rate-limiting.
+    Three-method DDG search. Sequential agents + these fallbacks together
+    avoid Railway IP rate-limiting.
     """
     import random
-    from ddgs import DDGS
+    import requests as _requests
     loop = asyncio.get_running_loop()
 
-    for attempt in range(3):
+    # Method 1: DDGS library (2 attempts)
+    for attempt in range(2):
         try:
+            if attempt > 0:
+                await asyncio.sleep(random.uniform(3, 6))
+            from ddgs import DDGS
             results = await loop.run_in_executor(
                 None,
                 lambda: list(DDGS().text(query, max_results=max_results))
             )
             if results:
+                print(f"DDG OK (attempt {attempt + 1}): {len(results)} results")
                 return results
-            await asyncio.sleep(random.uniform(2, 4))
         except Exception as e:
-            print(f"DDG attempt {attempt + 1} failed for '{query}': {e}")
-            await asyncio.sleep(random.uniform(3, 6))
+            print(f"DDG attempt {attempt + 1} error: {e}")
 
-    # Fallback: DuckDuckGo instant-answer JSON API
+    # Method 2: DuckDuckGo HTML scraping
     try:
-        import requests
-        params = {
-            "q": query,
-            "format": "json",
-            "no_html": "1",
-            "skip_disambig": "1",
-        }
         headers = {
-            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
-            "Accept-Language": "en-US,en;q=0.9",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+            "Referer": "https://duckduckgo.com/",
         }
-        resp = requests.get(
-            "https://api.duckduckgo.com/",
-            params=params,
-            headers=headers,
-            timeout=10,
+        results = await loop.run_in_executor(
+            None,
+            lambda: _html_search(query, max_results, headers)
         )
-        data = resp.json()
-        results = []
-        for item in data.get("RelatedTopics", [])[:max_results]:
-            if isinstance(item, dict) and item.get("Text"):
-                results.append({
-                    "title": item.get("Text", "")[:80],
-                    "href": item.get("FirstURL", ""),
-                    "body": item.get("Text", ""),
-                })
-        return results
+        if results:
+            print(f"DDG HTML scrape OK: {len(results)} results")
+            return results
     except Exception as e:
-        print(f"DDG fallback also failed for '{query}': {e}")
-        return []
+        print(f"DDG HTML error: {e}")
+
+    # Method 3: DuckDuckGo instant-answer JSON API
+    try:
+        def _instant():
+            params = {
+                "q": query,
+                "format": "json",
+                "no_html": "1",
+                "skip_disambig": "1",
+                "no_redirect": "1",
+            }
+            r = _requests.get(
+                "https://api.duckduckgo.com/",
+                params=params,
+                headers={"User-Agent": "Mozilla/5.0 Atlas-AI-Research/1.0"},
+                timeout=10,
+            )
+            data = r.json()
+            out = []
+            for item in data.get("RelatedTopics", [])[:max_results]:
+                if isinstance(item, dict) and item.get("Text"):
+                    out.append({
+                        "title": item.get("Text", "")[:100],
+                        "href": item.get("FirstURL", ""),
+                        "body": item.get("Text", ""),
+                    })
+            return out
+
+        results = await loop.run_in_executor(None, _instant)
+        if results:
+            print(f"DDG instant API OK: {len(results)} results")
+            return results
+    except Exception as e:
+        print(f"DDG instant error: {e}")
+
+    print(f"All DDG methods failed for: {query}")
+    return []
+
+
+def _html_search(query: str, max_results: int, headers: dict) -> list:
+    import requests
+    import urllib.parse
+    from bs4 import BeautifulSoup
+
+    url = f"https://html.duckduckgo.com/html/?q={urllib.parse.quote(query)}"
+    resp = requests.get(url, headers=headers, timeout=15)
+    soup = BeautifulSoup(resp.text, "lxml")
+
+    results = []
+    for result in soup.select(".result__body")[:max_results]:
+        title_el = result.select_one(".result__title a")
+        snippet_el = result.select_one(".result__snippet")
+        if title_el:
+            results.append({
+                "title": title_el.get_text(strip=True),
+                "href": title_el.get("href", ""),
+                "body": snippet_el.get_text(strip=True) if snippet_el else "",
+            })
+    return results
 
 def result_to_business(r: dict, source_type: str, confidence: float) -> dict:
     """Convert a DDG search result dict into a business dict"""
@@ -636,28 +685,31 @@ async def run_research(job_id: str, query: str):
                 lambda: db.table("businesses").delete().eq("job_id", job_id).execute()
             )
 
-        await emit(job_id, "Launching 12 agents in parallel")
+        await emit(job_id, "Launching agents sequentially")
 
-        # ── Run all source agents CONCURRENTLY ──────────────────────────
-        agent_results = await asyncio.gather(
-            agent_google(job_id, category, location),
-            agent_yelp(job_id, category, location),
-            agent_yellow_pages(job_id, category, location),
-            agent_linkedin(job_id, category, location),
-            agent_facebook(job_id, category, location),
-            agent_bbb(job_id, category, location),
-            agent_healthgrades(job_id, category, location),
-            agent_legal_dir(job_id, category, location),
-            agent_government(job_id, category, location),
-            agent_industry_dirs(job_id, category, location),
-            return_exceptions=True  # Never crash if one agent fails
-        )
-
-        # Collect all results, skip any failed agents
+        # ── Run agents SEQUENTIALLY with delays to avoid DDG rate-limiting ──
+        # Parallel requests flood DDG from Railway's shared IPs and guarantee 0 results.
         all_businesses = []
-        for r in agent_results:
-            if isinstance(r, list):
-                all_businesses.extend(r)
+        agents = [
+            ("Google",       agent_google),
+            ("Yelp",         agent_yelp),
+            ("Yellow Pages", agent_yellow_pages),
+            ("LinkedIn",     agent_linkedin),
+            ("BBB",          agent_bbb),
+            ("Healthgrades", agent_healthgrades),
+            ("Government",   agent_government),
+            ("Legal Dir",    agent_legal_dir),
+            ("Industry Dir", agent_industry_dirs),
+            ("Facebook",     agent_facebook),
+        ]
+
+        for name, agent_fn in agents:
+            try:
+                results = await agent_fn(job_id, category, location)
+                all_businesses.extend(results)
+                await asyncio.sleep(random.uniform(1, 2))
+            except Exception as e:
+                print(f"Agent {name} failed: {e}")
 
         raw_count = len(all_businesses)
         await emit(job_id, "Aggregating results",
