@@ -143,19 +143,56 @@ async def emit(job_id: str, title: str, subtitle: str = "",
 
 async def ddg_search(query: str, max_results: int = 15) -> list:
     """
-    DuckDuckGo search — FREE, no API key, works perfectly.
-    Uses run_in_executor because DDGS() is synchronous.
+    DuckDuckGo search with retry + fallback for Railway IP rate-limiting.
     """
+    import random
+    from ddgs import DDGS
+    loop = asyncio.get_running_loop()
+
+    for attempt in range(3):
+        try:
+            results = await loop.run_in_executor(
+                None,
+                lambda: list(DDGS().text(query, max_results=max_results))
+            )
+            if results:
+                return results
+            await asyncio.sleep(random.uniform(2, 4))
+        except Exception as e:
+            print(f"DDG attempt {attempt + 1} failed for '{query}': {e}")
+            await asyncio.sleep(random.uniform(3, 6))
+
+    # Fallback: DuckDuckGo instant-answer JSON API
     try:
-        from ddgs import DDGS
-        loop = asyncio.get_running_loop()
-        results = await loop.run_in_executor(
-            None,
-            lambda: list(DDGS().text(query, max_results=max_results))
+        import requests
+        params = {
+            "q": query,
+            "format": "json",
+            "no_html": "1",
+            "skip_disambig": "1",
+        }
+        headers = {
+            "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
+            "Accept-Language": "en-US,en;q=0.9",
+        }
+        resp = requests.get(
+            "https://api.duckduckgo.com/",
+            params=params,
+            headers=headers,
+            timeout=10,
         )
-        return results or []
+        data = resp.json()
+        results = []
+        for item in data.get("RelatedTopics", [])[:max_results]:
+            if isinstance(item, dict) and item.get("Text"):
+                results.append({
+                    "title": item.get("Text", "")[:80],
+                    "href": item.get("FirstURL", ""),
+                    "body": item.get("Text", ""),
+                })
+        return results
     except Exception as e:
-        print(f"DDG error '{query}': {e}")
+        print(f"DDG fallback also failed for '{query}': {e}")
         return []
 
 def result_to_business(r: dict, source_type: str, confidence: float) -> dict:
@@ -591,6 +628,14 @@ async def run_research(job_id: str, query: str):
         category, location = parse_query(query)
         await emit(job_id, "Query parsed",
                    f"Category: {category} · Location: {location}")
+
+        # Clear any stale businesses from a previous run of this job
+        if db:
+            await loop.run_in_executor(
+                None,
+                lambda: db.table("businesses").delete().eq("job_id", job_id).execute()
+            )
+
         await emit(job_id, "Launching 12 agents in parallel")
 
         # ── Run all source agents CONCURRENTLY ──────────────────────────

@@ -7,3 +7,4 @@ rapidfuzz==3.6.2
 supabase>=2.10.0
 python-dotenv==1.0.1
 lxml==5.1.0
+requests>=2.31.0
