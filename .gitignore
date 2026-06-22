@@ -37,3 +37,10 @@ next-env.d.ts
 
 # bolt.new tool config
 .bolt
+
+# Python
+backend/.venv/
+backend/__pycache__/
+__pycache__/
+*.pyc
+*.pyo

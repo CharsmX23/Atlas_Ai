@@ -147,7 +147,7 @@ async def ddg_search(query: str, max_results: int = 15) -> list:
     Uses run_in_executor because DDGS() is synchronous.
     """
     try:
-        from duckduckgo_search import DDGS
+        from ddgs import DDGS
         loop = asyncio.get_running_loop()
         results = await loop.run_in_executor(
             None,
@@ -587,8 +587,6 @@ async def run_research(job_id: str, query: str):
 
     try:
         await emit(job_id, "Initializing Atlas", "Loading research engine")
-        await asyncio.sleep(0.3)
-        await emit(job_id, "Memory loaded", "1,247 cached businesses available")
 
         category, location = parse_query(query)
         await emit(job_id, "Query parsed",
@@ -627,7 +625,6 @@ async def run_research(job_id: str, query: str):
         await emit(job_id, "Cross-checking sources",
                    "Verifying phone numbers, emails, websites across sources...",
                    "running")
-        await asyncio.sleep(0.5)
 
         # ── Deduplication ────────────────────────────────────────────────
         await emit(job_id, "Running deduplication",
