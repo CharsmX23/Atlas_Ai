@@ -1,6 +1,6 @@
 'use client'
 
-import { useState, useCallback, useRef, useEffect } from 'react'
+import { useState, useCallback, useRef } from 'react'
 import { IdleHero } from '@/components/home/IdleHero'
 import { MissionControl } from '@/components/home/MissionControl'
 import { BottomSearchBar } from '@/components/mission/BottomSearchBar'
@@ -13,7 +13,6 @@ import type { RealtimeChannel } from '@supabase/supabase-js'
 type Phase = 'idle' | 'running' | 'complete'
 
 // ── Map a flat backend business row to the BusinessResult display type ─────────
-// Fills every optional field with a safe default so the UI never crashes.
 function toBusinessResult(b: Record<string, unknown>, index: number): BusinessResult {
   const urls: string[] = Array.isArray(b.source_urls)
     ? (b.source_urls as string[])
@@ -61,20 +60,15 @@ export default function Research() {
   const [phase, setPhase] = useState<Phase>('idle')
   const [query, setQuery] = useState('')
   const [mode, setMode] = useState<'deep' | 'fast'>('deep')
-  const [realResults, setRealResults] = useState<BusinessResult[] | null>(null)
+  const [realResults, setRealResults] = useState<BusinessResult[]>([])
   const [liveEvents, setLiveEvents] = useState<LiveEvent[]>([])
+  // Increment each mission start to force MissionControl remount (clears internal timer/results state)
+  const [missionKey, setMissionKey] = useState(0)
 
   // Refs for cleanup — never trigger re-renders
   const channelRef = useRef<RealtimeChannel | null>(null)
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
   const jobIdRef = useRef<string | null>(null)
-
-  // ── Cleanup on unmount ──────────────────────────────────────────────────────
-  useEffect(() => {
-    return () => {
-      _cleanup()
-    }
-  }, [])
 
   const _cleanup = () => {
     if (channelRef.current) {
@@ -91,7 +85,6 @@ export default function Research() {
   const subscribeToJob = (jobId: string, backendUrl: string) => {
     const channel = supabase
       .channel(`research:${jobId}`)
-      // 1. Live timeline: each new agent_event row streams to the timeline
       .on(
         'postgres_changes',
         {
@@ -105,7 +98,6 @@ export default function Research() {
           setLiveEvents((prev) => [...prev, ev])
         }
       )
-      // 2. Completion signal: research_jobs.status = 'complete'
       .on(
         'postgres_changes',
         {
@@ -116,7 +108,6 @@ export default function Research() {
         },
         async (payload) => {
           if (payload.new.status === 'complete') {
-            // Fetch the final business list
             const { data } = await supabase
               .from('businesses')
               .select('*')
@@ -127,7 +118,6 @@ export default function Research() {
                 (data as Record<string, unknown>[]).map(toBusinessResult)
               )
             }
-            // Let the animation finish its last frame before forcing complete
             setTimeout(() => setPhase('complete'), 800)
           }
         }
@@ -136,7 +126,7 @@ export default function Research() {
 
     channelRef.current = channel
 
-    // ── Fallback: poll every 3s in case Realtime is not enabled yet ────────
+    // Fallback: poll every 3s in case Realtime is not enabled yet
     pollRef.current = setInterval(async () => {
       try {
         const res = await fetch(`${backendUrl}/research/${jobId}`)
@@ -156,18 +146,18 @@ export default function Research() {
   }
 
   // ── Start mission ───────────────────────────────────────────────────────────
-  const startMission = (q: string) => {
+  const startMission = useCallback((q: string) => {
+    // Clear ALL previous state before starting new search
+    _cleanup()
+    setMissionKey((k) => k + 1)   // force MissionControl remount
     setQuery(q)
     setPhase('running')
-    setRealResults(null)
+    setRealResults([])             // explicitly empty, not null
     setLiveEvents([])
-    _cleanup()
+    jobIdRef.current = null
 
     const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL
-    if (!backendUrl) {
-      // No backend configured — UI plays mock animation; graceful demo mode
-      return
-    }
+    if (!backendUrl) return        // no backend → mock animation plays
 
     fetch(`${backendUrl}/research`, {
       method: 'POST',
@@ -186,24 +176,31 @@ export default function Research() {
       .catch(() => {
         // Backend unreachable — fall back to mock animation silently
       })
-  }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [mode])
 
-  const resetMission = () => {
+  const resetMission = useCallback(() => {
     _cleanup()
     jobIdRef.current = null
     setQuery('')
     setPhase('idle')
-    setRealResults(null)
+    setRealResults([])
     setLiveEvents([])
-  }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
-  // Stable callback — avoids re-triggering the MissionControl timer effect
   const handleComplete = useCallback(() => setPhase('complete'), [])
 
   return (
     <AppLayout>
-      <div className="flex-1 flex flex-col min-w-0 overflow-hidden h-full">
-        <div className="flex-1 relative overflow-hidden">
+      {/*
+        flex-col fills the full height of motion.main.
+        The inner content div (flex-1) grows to fill; the search bar (shrink-0)
+        sits at bottom — only on idle. No fixed positioning anywhere.
+      */}
+      <div className="flex flex-col h-full min-h-0">
+        {/* Content area — fills remaining space */}
+        <div className="flex-1 relative overflow-hidden min-h-0">
           {phase === 'idle' ? (
             <motion.div
               key="idle"
@@ -217,7 +214,7 @@ export default function Research() {
             </motion.div>
           ) : (
             <motion.div
-              key="mission"
+              key={`mission-${missionKey}`}
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
@@ -229,15 +226,16 @@ export default function Research() {
                 phase={phase}
                 onComplete={handleComplete}
                 onReset={resetMission}
-                realResults={realResults}
+                onNewMission={startMission}
+                realResults={realResults.length > 0 ? realResults : null}
                 liveEvents={liveEvents}
               />
             </motion.div>
           )}
         </div>
 
-        {/* Search bar — hidden while research is actively running */}
-        {phase !== 'running' && (
+        {/* Search bar — only on idle homepage, never on running/complete */}
+        {phase === 'idle' && (
           <motion.div
             key="searchbar"
             initial={{ opacity: 0, y: 16 }}
@@ -249,11 +247,7 @@ export default function Research() {
               onSubmit={startMission}
               mode={mode}
               setMode={setMode}
-              compact={phase !== 'idle'}
               isRunning={false}
-              phase={phase}
-              query={query}
-              onReset={resetMission}
             />
           </motion.div>
         )}

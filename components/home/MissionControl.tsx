@@ -13,12 +13,13 @@ interface Props {
   phase: 'running' | 'complete'
   onComplete: () => void
   onReset: () => void
+  onNewMission?: (query: string) => void
   realResults?: BusinessResult[] | null
   /** Live events from Supabase Realtime — when present, drives the timeline instead of the mock script */
   liveEvents?: LiveEvent[]
 }
 
-export function MissionControl({ query, phase, onComplete, onReset, realResults, liveEvents = [] }: Props) {
+export function MissionControl({ query, phase, onComplete, onReset, onNewMission, realResults, liveEvents = [] }: Props) {
   const [currentStep, setCurrentStep] = useState(1)
   const [elapsed, setElapsed] = useState(0)
   const [showResults, setShowResults] = useState(false)
@@ -112,6 +113,7 @@ export function MissionControl({ query, phase, onComplete, onReset, realResults,
           resultsFound={47}
           confidence={92}
           verifiedCount={47}
+          onNewMission={onNewMission}
         />
         <div className="flex-1 min-h-1 overflow-hidden">
           <ResultsView
@@ -134,6 +136,7 @@ export function MissionControl({ query, phase, onComplete, onReset, realResults,
         agentsComplete={agentsDone}
         agentsTotal={totalAgents}
         resultsFound={resultsFound}
+        onNewMission={onNewMission}
       />
 
       {/* Main content area: Timeline left, Agents right */}

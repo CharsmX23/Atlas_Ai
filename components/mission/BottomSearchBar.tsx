@@ -2,13 +2,13 @@
 
 import { useState, useRef, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Search, ArrowRight, X, Sparkles, RotateCcw } from 'lucide-react'
+import { Search, ArrowRight, X, Sparkles } from 'lucide-react'
 
 interface BottomSearchBarProps {
   onSubmit: (query: string) => void
   mode: 'deep' | 'fast'
   setMode: (mode: 'deep' | 'fast') => void
-  isRunning: boolean
+  isRunning?: boolean
   compact?: boolean
   placeholder?: string
   phase?: 'idle' | 'running' | 'complete'
@@ -20,28 +20,19 @@ export function BottomSearchBar({
   onSubmit,
   mode,
   setMode,
-  isRunning,
-  compact = false,
+  isRunning = false,
   placeholder = 'Research any business, service, or category...',
-  phase = 'idle',
   query: propQuery,
-  onReset,
 }: BottomSearchBarProps) {
   const [query, setQuery] = useState(propQuery || '')
   const [isFocused, setIsFocused] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
-    if (propQuery !== undefined) {
-      setQuery(propQuery)
-    }
+    if (propQuery !== undefined) setQuery(propQuery)
   }, [propQuery])
 
   const handleSubmit = () => {
-    if (phase === 'complete') {
-      onReset?.()
-      return
-    }
     if (!query.trim() || isRunning) return
     onSubmit(query.trim())
   }
@@ -51,21 +42,16 @@ export function BottomSearchBar({
   }
 
   return (
-    <div
-      className="fixed bottom-0 right-0 z-50 transition-all duration-300"
-      style={{
-        left: compact ? '72px' : '250px',
-      }}
-    >
-      {/* Gradient fade behind bar */}
+    <div className="w-full">
+      {/* Subtle gradient fade above the bar */}
       <div
-        className="absolute inset-x-0 bottom-0 h-24 pointer-events-none"
-        style={{ background: 'linear-gradient(to top, var(--bg) 60%, transparent)' }}
+        className="h-12 w-full pointer-events-none"
+        style={{ background: 'linear-gradient(to top, var(--bg) 30%, transparent)' }}
       />
 
-      {/* Bar content */}
-      <div className="relative px-6 pb-8 pt-4">
-        <div className="mx-auto" style={{ maxWidth: '900px', width: '90vw' }}>
+      {/* Bar content — normal flow, no fixed/z-index */}
+      <div className="px-6 pb-8 pt-0" style={{ background: 'var(--bg)' }}>
+        <div className="mx-auto" style={{ maxWidth: '900px', width: '90%' }}>
           {/* Input wrapper */}
           <div
             className="flex flex-col transition-all duration-200"
@@ -144,35 +130,26 @@ export function BottomSearchBar({
                 ))}
               </div>
 
-              {/* Start / New mission button */}
+              {/* Start button */}
               <motion.button
                 onClick={handleSubmit}
-                disabled={phase === 'idle' ? !query.trim() : isRunning}
+                disabled={!query.trim() || isRunning}
                 className="flex items-center gap-2 font-medium disabled:cursor-not-allowed"
                 style={{
                   height: '46px',
                   padding: '0 24px',
                   borderRadius: '12px',
                   fontSize: '14px',
-                  background: phase === 'idle' && !query.trim() ? 'var(--border)' : 'var(--text-primary)',
-                  color: phase === 'idle' && !query.trim() ? 'var(--text-faint)' : 'var(--bg)',
-                  opacity: phase === 'idle' && !query.trim() ? 0.6 : 1,
+                  background: !query.trim() ? 'var(--border)' : 'var(--text-primary)',
+                  color: !query.trim() ? 'var(--text-faint)' : 'var(--bg)',
+                  opacity: !query.trim() ? 0.6 : 1,
                 }}
-                whileHover={!(phase === 'idle' && !query.trim()) ? { scale: 1.02 } : {}}
-                whileTap={!(phase === 'idle' && !query.trim()) ? { scale: 0.98 } : {}}
+                whileHover={query.trim() ? { scale: 1.02 } : {}}
+                whileTap={query.trim() ? { scale: 0.98 } : {}}
               >
-                {phase === 'complete' ? (
-                  <>
-                    <RotateCcw size={14} strokeWidth={2} />
-                    New mission
-                  </>
-                ) : (
-                  <>
-                    <Sparkles size={14} strokeWidth={2} />
-                    Start mission
-                    <ArrowRight size={14} strokeWidth={2} />
-                  </>
-                )}
+                <Sparkles size={14} strokeWidth={2} />
+                Start mission
+                <ArrowRight size={14} strokeWidth={2} />
               </motion.button>
             </div>
           </div>
