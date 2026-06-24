@@ -3,8 +3,10 @@ export interface LiveEvent {
   id: string
   job_id: string
   title: string
-  subtitle: string
-  status: 'done' | 'running' | 'warn' | 'active'
+  subtitle?: string
+  message?: string
+  event_type?: 'started' | 'completed' | 'failed' | 'rate_limited' | string
+  status: 'done' | 'running' | 'warn' | 'active' | 'failed'
   agent_name?: string
   created_at: string
 }

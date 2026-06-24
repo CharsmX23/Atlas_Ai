@@ -77,6 +77,8 @@ function toBusinessResult(b: Record<string, unknown>, index: number): BusinessRe
   }
 }
 
+type ConnectionStatus = 'idle' | 'connecting' | 'connected' | 'failed'
+
 function ResearchInner() {
   const { settings, loaded: settingsLoaded } = useSettings()
   const searchParams = useSearchParams()
@@ -89,6 +91,8 @@ function ResearchInner() {
   const [liveEvents, setLiveEvents] = useState<LiveEvent[]>([])
   const [researchStats, setResearchStats] = useState<Record<string, number> | null>(null)
   const [sourceScores, setSourceScores] = useState<Record<string, number> | null>(null)
+  const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('idle')
+  const [liveBusinesses, setLiveBusinesses] = useState<BusinessResult[]>([])
   // Increment each mission start to force MissionControl remount (clears internal timer/results state)
   const [missionKey, setMissionKey] = useState(0)
 
@@ -103,6 +107,7 @@ function ResearchInner() {
     const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL
     if (!backendUrl) return
     jobIdRef.current = jobIdParam
+    setConnectionStatus('connected')
     setPhase('complete')
     fetch(`${backendUrl}/research/${jobIdParam}`)
       .then((r) => r.json())
@@ -120,7 +125,10 @@ function ResearchInner() {
 
   // Refs for cleanup — never trigger re-renders
   const channelRef = useRef<RealtimeChannel | null>(null)
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null)
+  const pollTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const connectionTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const connectionStatusRef = useRef<ConnectionStatus>('idle')
+  const backoffRef = useRef(1000)
   const jobIdRef = useRef<string | null>(null)
 
   const _cleanup = () => {
@@ -128,37 +136,111 @@ function ResearchInner() {
       supabase.removeChannel(channelRef.current)
       channelRef.current = null
     }
-    if (pollRef.current) {
-      clearInterval(pollRef.current)
-      pollRef.current = null
+    if (pollTimeoutRef.current) {
+      clearTimeout(pollTimeoutRef.current)
+      pollTimeoutRef.current = null
+    }
+    if (connectionTimeoutRef.current) {
+      clearTimeout(connectionTimeoutRef.current)
+      connectionTimeoutRef.current = null
     }
   }
 
+  // ── Polling with exponential backoff + Supabase event fallback ──────────────
+  const pollJob = (jobId: string, backendUrl: string) => {
+    const attempt = async () => {
+      try {
+        // Fetch agent_events directly from Supabase (fallback if Realtime isn't enabled)
+        const { data: events } = await supabase
+          .from('agent_events')
+          .select('*')
+          .eq('job_id', jobId)
+          .order('created_at', { ascending: true })
+        if (events && events.length > 0) {
+          setLiveEvents(events as LiveEvent[])
+        }
+
+        // Fetch job status from backend
+        const pollUrl = `${backendUrl}/research/${jobId}`
+        console.log(`[Atlas AI] Polling ${pollUrl}`)
+        const res = await fetch(pollUrl)
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
+        const { job, businesses, source_scores, search_summary } = await res.json()
+
+        // Mark connected on first successful poll
+        if (connectionStatusRef.current !== 'connected') {
+          console.log('[Atlas AI] Backend connected')
+          connectionStatusRef.current = 'connected'
+          setConnectionStatus('connected')
+          backoffRef.current = 1000
+          if (connectionTimeoutRef.current) {
+            clearTimeout(connectionTimeoutRef.current)
+            connectionTimeoutRef.current = null
+          }
+        }
+
+        if (job?.status === 'complete') {
+          if (Array.isArray(businesses) && businesses.length > 0) {
+            setRealResults((businesses as Record<string, unknown>[]).map(toBusinessResult))
+          }
+          if (search_summary && typeof search_summary === 'object') setResearchStats(search_summary)
+          if (source_scores && typeof source_scores === 'object') setSourceScores(source_scores)
+          setTimeout(() => setPhase('complete'), 800)
+        } else {
+          // Still running — schedule next poll
+          pollTimeoutRef.current = setTimeout(attempt, 3000)
+        }
+      } catch (err) {
+        console.error('[Atlas AI] Poll error:', err)
+        const delay = backoffRef.current
+        backoffRef.current = Math.min(delay * 2, 8000)
+        console.log(`[Atlas AI] Retrying poll in ${delay}ms`)
+        pollTimeoutRef.current = setTimeout(attempt, delay)
+      }
+    }
+    // First poll after 2s (give backend time to start processing)
+    pollTimeoutRef.current = setTimeout(attempt, 2000)
+  }
+
   // ── Subscribe to Supabase Realtime for a given job ──────────────────────────
-  const subscribeToJob = (jobId: string, backendUrl: string) => {
+  const subscribeToJob = (jobId: string) => {
     const channel = supabase
       .channel(`research:${jobId}`)
       .on(
         'postgres_changes',
-        {
-          event: 'INSERT',
-          schema: 'public',
-          table: 'agent_events',
-          filter: `job_id=eq.${jobId}`,
-        },
+        { event: 'INSERT', schema: 'public', table: 'agent_events', filter: `job_id=eq.${jobId}` },
         (payload) => {
           const ev = payload.new as LiveEvent
-          setLiveEvents((prev) => [...prev, ev])
+          setLiveEvents((prev) => {
+            if (prev.some((e) => e.id === ev.id)) return prev
+            return [...prev, ev]
+          })
+          if (connectionStatusRef.current !== 'connected') {
+            connectionStatusRef.current = 'connected'
+            setConnectionStatus('connected')
+            if (connectionTimeoutRef.current) {
+              clearTimeout(connectionTimeoutRef.current)
+              connectionTimeoutRef.current = null
+            }
+          }
         }
       )
       .on(
         'postgres_changes',
-        {
-          event: 'UPDATE',
-          schema: 'public',
-          table: 'research_jobs',
-          filter: `id=eq.${jobId}`,
-        },
+        { event: 'INSERT', schema: 'public', table: 'businesses', filter: `job_id=eq.${jobId}` },
+        (payload) => {
+          const row = payload.new as Record<string, unknown>
+          const biz = toBusinessResult(row, 0)
+          setLiveBusinesses((prev) => {
+            // Deduplicate by business_name as a safe fallback (rank may not be set yet)
+            if (prev.some((b) => b.business_name === biz.business_name)) return prev
+            return [...prev, biz]
+          })
+        }
+      )
+      .on(
+        'postgres_changes',
+        { event: 'UPDATE', schema: 'public', table: 'research_jobs', filter: `id=eq.${jobId}` },
         async (payload) => {
           if (payload.new.status === 'complete') {
             const { data } = await supabase
@@ -167,9 +249,7 @@ function ResearchInner() {
               .eq('job_id', jobId)
               .order('rank')
             if (data && data.length > 0) {
-              setRealResults(
-                (data as Record<string, unknown>[]).map(toBusinessResult)
-              )
+              setRealResults((data as Record<string, unknown>[]).map(toBusinessResult))
             }
             setTimeout(() => setPhase('complete'), 800)
           }
@@ -178,58 +258,68 @@ function ResearchInner() {
       .subscribe()
 
     channelRef.current = channel
-
-    // Fallback: poll every 3s in case Realtime is not enabled yet
-    pollRef.current = setInterval(async () => {
-      try {
-        const res = await fetch(`${backendUrl}/research/${jobId}`)
-        const { job, businesses } = await res.json()
-        if (job?.status === 'complete' && Array.isArray(businesses) && businesses.length > 0) {
-          clearInterval(pollRef.current!)
-          pollRef.current = null
-          setRealResults(
-            (businesses as Record<string, unknown>[]).map(toBusinessResult)
-          )
-          setTimeout(() => setPhase('complete'), 800)
-        }
-      } catch {
-        // backend unreachable during poll — ignore
-      }
-    }, 3000)
   }
 
   // ── Start mission ───────────────────────────────────────────────────────────
   const startMission = useCallback((q: string) => {
-    // Clear ALL previous state before starting new search
     _cleanup()
-    setMissionKey((k) => k + 1)   // force MissionControl remount
+    setMissionKey((k) => k + 1)
     setQuery(q)
     setPhase('running')
-    setRealResults([])             // explicitly empty, not null
+    setRealResults([])
     setLiveEvents([])
+    setLiveBusinesses([])
     jobIdRef.current = null
+    backoffRef.current = 1000
+    connectionStatusRef.current = 'connecting'
+    setConnectionStatus('connecting')
 
     const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL
-    if (!backendUrl) return        // no backend → mock animation plays
+    if (!backendUrl) {
+      console.warn('[Atlas AI] NEXT_PUBLIC_BACKEND_URL not set — running in demo mode')
+      return
+    }
+
+    // 30-second hard timeout
+    connectionTimeoutRef.current = setTimeout(() => {
+      if (connectionStatusRef.current !== 'connected') {
+        console.error('[Atlas AI] Connection timeout after 30s')
+        connectionStatusRef.current = 'failed'
+        setConnectionStatus('failed')
+      }
+    }, 30000)
 
     const enabledSources = settings.sources.map((s) => SOURCE_BACKEND_KEYS[s] ?? s)
+    const postUrl = `${backendUrl}/research`
+    console.log(`[Atlas AI] POST ${postUrl}`, { query: q, mode })
 
-    fetch(`${backendUrl}/research`, {
+    fetch(postUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ query: q, mode, enabled_sources: enabledSources }),
     })
       .then((r) => {
-        if (!r.ok) throw new Error(`Backend returned ${r.status}`)
+        if (!r.ok) throw new Error(`HTTP ${r.status} from ${postUrl}`)
         return r.json()
       })
       .then(({ job_id }: { job_id?: string }) => {
-        if (!job_id) return
+        if (!job_id) {
+          console.error('[Atlas AI] No job_id in POST response')
+          return
+        }
+        console.log(`[Atlas AI] Job started: ${job_id}`)
         jobIdRef.current = job_id
-        subscribeToJob(job_id, backendUrl)
+        subscribeToJob(job_id)
+        pollJob(job_id, backendUrl)
       })
-      .catch(() => {
-        // Backend unreachable — fall back to mock animation silently
+      .catch((err: Error) => {
+        console.error(`[Atlas AI] Failed to start research: ${postUrl}`, err.message)
+        connectionStatusRef.current = 'failed'
+        setConnectionStatus('failed')
+        if (connectionTimeoutRef.current) {
+          clearTimeout(connectionTimeoutRef.current)
+          connectionTimeoutRef.current = null
+        }
       })
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mode, settings.sources])
@@ -237,39 +327,41 @@ function ResearchInner() {
   const resetMission = useCallback(() => {
     _cleanup()
     jobIdRef.current = null
+    connectionStatusRef.current = 'idle'
+    setConnectionStatus('idle')
     setQuery('')
     setPhase('idle')
     setRealResults([])
     setLiveEvents([])
+    setLiveBusinesses([])
     setResearchStats(null)
     setSourceScores(null)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
-  // Always fetch ALL results when complete — Realtime misses bulk inserts.
-  // Retry after 3s in case the first fetch lands before Supabase finishes writing.
+  // After job complete: do one final fetch to ensure we have all results
+  // (pollJob transitions to complete, but Realtime path skips the final fetch)
   useEffect(() => {
     if (phase !== 'complete') return
     const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL
     const jobId = jobIdRef.current
     if (!backendUrl || !jobId) return
 
-    const fetchResults = () =>
+    const fetchFinal = () =>
       fetch(`${backendUrl}/research/${jobId}`)
         .then((r) => r.json())
-        .then(({ businesses, job, source_scores }) => {
+        .then(({ businesses, source_scores, search_summary }) => {
           if (Array.isArray(businesses) && businesses.length > 0) {
-            console.log('Fetched', businesses.length, 'real businesses')
             setRealResults((businesses as Record<string, unknown>[]).map(toBusinessResult))
           }
-          if (job?.stats) setResearchStats(job.stats)
+          if (search_summary && typeof search_summary === 'object') setResearchStats(search_summary)
           if (source_scores && typeof source_scores === 'object') setSourceScores(source_scores)
         })
-        .catch((e) => console.error('Results fetch failed:', e))
+        .catch(() => {})
 
-    fetchResults()
-    const timer = setTimeout(fetchResults, 3000)
-    return () => clearTimeout(timer)
+    fetchFinal()
+    const t = setTimeout(fetchFinal, 3000)
+    return () => clearTimeout(t)
   }, [phase])
 
   const handleComplete = useCallback(() => setPhase('complete'), [])
@@ -310,10 +402,13 @@ function ResearchInner() {
                 onComplete={handleComplete}
                 onReset={resetMission}
                 onNewMission={startMission}
+                onRetry={() => startMission(query)}
                 realResults={realResults}
+                liveBusinesses={liveBusinesses}
                 liveEvents={liveEvents}
                 researchStats={researchStats}
                 sourceScores={sourceScores}
+                connectionStatus={connectionStatus}
               />
             </motion.div>
           )}

@@ -15,6 +15,7 @@ interface MissionStatusBarProps {
   confidence?: number
   verifiedCount?: number
   onNewMission?: (query: string) => void
+  connectionStatus?: 'idle' | 'connecting' | 'connected' | 'failed'
 }
 
 export function MissionStatusBar({
@@ -28,7 +29,15 @@ export function MissionStatusBar({
   confidence,
   verifiedCount,
   onNewMission,
+  connectionStatus = 'connecting',
 }: MissionStatusBarProps) {
+
+  const connDot = {
+    idle:       { bg: 'var(--text-faint)', pulse: false },
+    connecting: { bg: 'var(--text-faint)', pulse: true  },
+    connected:  { bg: 'var(--success)',    pulse: false },
+    failed:     { bg: 'var(--error)',      pulse: false },
+  }[connectionStatus]
   const [showInput, setShowInput] = useState(false)
   const [inputQuery, setInputQuery] = useState('')
   const inputRef = useRef<HTMLInputElement>(null)
@@ -76,12 +85,14 @@ export function MissionStatusBar({
               </h2>
             </div>
             <div className="flex items-center gap-2 mt-0.5">
+              {/* Connection status dot */}
               <span
-                className="w-2 h-2 rounded-full animate-pulse-warm"
-                style={{ background: 'var(--text-primary)' }}
+                className={`w-2 h-2 rounded-full shrink-0 ${connDot.pulse ? 'animate-pulse-warm' : ''}`}
+                style={{ background: connDot.bg }}
+                title={connectionStatus}
               />
               <span className="text-[13px] font-medium" style={{ color: 'var(--text-primary)' }}>
-                Running
+                {connectionStatus === 'failed' ? 'Unreachable' : connectionStatus === 'connected' ? 'Running' : 'Connecting…'}
               </span>
             </div>
           </div>
@@ -109,9 +120,26 @@ export function MissionStatusBar({
           >
             <span>Elapsed {timeStr}</span>
             <span style={{ color: 'var(--border)' }}>·</span>
-            <span>Agents {agentsComplete}/{agentsTotal}</span>
+            <span
+              style={{
+                color: agentsComplete === agentsTotal && agentsComplete > 0
+                  ? 'var(--success)'
+                  : 'var(--text-muted)',
+              }}
+            >
+              Agents {agentsComplete}/{agentsTotal}
+              {agentsComplete === agentsTotal && agentsComplete > 0 && ' ✓'}
+            </span>
             <span style={{ color: 'var(--border)' }}>·</span>
-            <span>Results {resultsFound} found</span>
+            <motion.span
+              key={resultsFound}
+              initial={{ scale: resultsFound > 0 ? 1.25 : 1 }}
+              animate={{ scale: 1 }}
+              transition={{ duration: 0.2, ease: 'easeOut' }}
+              style={{ display: 'inline-block' }}
+            >
+              Results {resultsFound} found
+            </motion.span>
           </div>
         </motion.div>
       ) : (
