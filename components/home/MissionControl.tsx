@@ -1,12 +1,33 @@
 'use client'
 
-import { useEffect, useState, useRef } from 'react'
-import { TIMELINE_SCRIPT, AGENT_SCRIPT } from './constants'
+import { useEffect, useState, useRef, useMemo } from 'react'
 import { ResultsView } from './ResultsView'
 import { MissionStatusBar } from '@/components/mission/MissionStatusBar'
-import type { TimelineEvent, AgentDef, BusinessResult, LiveEvent } from './constants'
-import { Check, X, AlertTriangle } from 'lucide-react'
-import { motion, AnimatePresence } from 'framer-motion'
+import type { BusinessResult, LiveEvent } from './constants'
+import { Check, AlertTriangle } from 'lucide-react'
+import { motion } from 'framer-motion'
+
+// Exact agent_name values the backend emits — order matches display order
+const AGENTS = [
+  { name: 'Google Search',   domain: 'google.com' },
+  { name: 'Yelp',            domain: 'yelp.com' },
+  { name: 'Yellow Pages',    domain: 'yellowpages.com' },
+  { name: 'LinkedIn',        domain: 'linkedin.com' },
+  { name: 'Facebook',        domain: 'facebook.com' },
+  { name: 'BBB Verifier',    domain: 'bbb.org' },
+  { name: 'Healthgrades',    domain: 'healthgrades.com' },
+  { name: 'Avvo/Justia',     domain: 'avvo.com' },
+  { name: 'Gov License DB',  domain: 'gov' },
+  { name: 'Industry Dirs',   domain: 'angi.com' },
+  { name: 'Website Detail',  domain: 'web' },
+  { name: 'Quality Auditor', domain: 'internal' },
+] as const
+
+interface AgentState {
+  status: 'queued' | 'running' | 'done'
+  results: number
+  duration: string
+}
 
 interface Props {
   query: string
@@ -15,90 +36,97 @@ interface Props {
   onReset: () => void
   onNewMission?: (query: string) => void
   realResults?: BusinessResult[] | null
-  /** Live events from Supabase Realtime — when present, drives the timeline instead of the mock script */
   liveEvents?: LiveEvent[]
+  researchStats?: Record<string, number> | null
+  sourceScores?: Record<string, number> | null
 }
 
-export function MissionControl({ query, phase, onComplete, onReset, onNewMission, realResults, liveEvents = [] }: Props) {
-  const [currentStep, setCurrentStep] = useState(1)
+export function MissionControl({
+  query,
+  phase,
+  onComplete,
+  onReset,
+  onNewMission,
+  realResults,
+  liveEvents = [],
+  researchStats,
+  sourceScores,
+}: Props) {
   const [elapsed, setElapsed] = useState(0)
   const [showResults, setShowResults] = useState(false)
-  const timelineRef = useRef<HTMLDivElement>(null)
+  const scrollRef = useRef<HTMLDivElement>(null)
   const completedRef = useRef(false)
 
-  // Live mode: real Supabase events are driving the timeline
-  const isLive = liveEvents.length > 0
-
-  const agentsDone = AGENT_SCRIPT.filter((a) => currentStep >= a.endAt).length
-  const totalAgents = AGENT_SCRIPT.length
-  // In live mode derive progress from event count; in mock mode from step counter
-  const progress = isLive
-    ? Math.min(100, (liveEvents.length / 18) * 100)
-    : Math.min(100, (currentStep / TIMELINE_SCRIPT.length) * 100)
-  const resultsFound = Math.round(progress / 100 * 47)
-
-  // Elapsed timer — always running while research is in progress
+  // Elapsed timer — stops when mission completes
   useEffect(() => {
     if (phase === 'complete') return
     const t = setInterval(() => setElapsed((e) => e + 1), 1000)
     return () => clearInterval(t)
   }, [phase])
 
-  // Mock animation — only runs when no live events are available
+  // Detect "Mission complete" event → transition to results
   useEffect(() => {
-    if (isLive || phase === 'complete') return
-    if (currentStep >= TIMELINE_SCRIPT.length) {
-      const t = setTimeout(() => {
-        if (!completedRef.current) {
-          completedRef.current = true
-          onComplete()
-          setTimeout(() => setShowResults(true), 1200)
-        }
-      }, 800)
-      return () => clearTimeout(t)
-    }
-    const t = setTimeout(() => setCurrentStep((s) => s + 1), 1500)
-    return () => clearTimeout(t)
-  }, [currentStep, phase, onComplete, isLive])
-
-  // Live mode: detect "Mission complete" event → transition to results
-  useEffect(() => {
-    if (!isLive || completedRef.current) return
+    if (completedRef.current) return
     const last = liveEvents[liveEvents.length - 1]
     if (last?.title === 'Mission complete') {
       completedRef.current = true
       onComplete()
       setTimeout(() => setShowResults(true), 1200)
     }
-  }, [liveEvents, isLive, onComplete])
+  }, [liveEvents, onComplete])
 
-  // Auto-scroll timeline whenever new content appears
+  // Phase flip from outside (polling/direct-fetch path)
   useEffect(() => {
-    if (timelineRef.current) {
-      timelineRef.current.scrollTop = timelineRef.current.scrollHeight
-    }
-  }, [currentStep, liveEvents.length])
-
-  // Trigger showResults when phase flips to 'complete' from outside (Realtime path)
-  useEffect(() => {
-    if (phase === 'complete' && !showResults) {
+    if (phase === 'complete' && !showResults && !completedRef.current) {
+      completedRef.current = true
       setTimeout(() => setShowResults(true), 400)
     }
   }, [phase, showResults])
 
-  // Build the visible timeline:
-  // • Live mode  → convert LiveEvent[] to TimelineEvent[]
-  // • Mock mode  → slice TIMELINE_SCRIPT to currentStep
-  const visibleEvents: TimelineEvent[] = isLive
-    ? liveEvents.map((ev, i) => ({
-        t: i,
-        dot: ev.status === 'running' ? 'active'
-           : ev.status === 'warn'    ? 'warn'
-           : 'done',
-        title: ev.title,
-        sub: ev.subtitle || undefined,
-      }))
-    : TIMELINE_SCRIPT.slice(0, currentStep)
+  // Auto-scroll timeline as new events arrive
+  useEffect(() => {
+    if (scrollRef.current) {
+      scrollRef.current.scrollTop = scrollRef.current.scrollHeight
+    }
+  }, [liveEvents.length])
+
+  // Build agent status from real events, computing duration from paired running/done timestamps
+  const agentStatus = useMemo(() => {
+    const map: Record<string, AgentState> = {}
+    const startMs: Record<string, number> = {}
+
+    for (const ev of liveEvents) {
+      const name = ev.agent_name
+      if (!name) continue
+      const ts = new Date(ev.created_at).getTime()
+
+      if (ev.status === 'running' || ev.status === 'active') {
+        startMs[name] = ts
+        map[name] = { status: 'running', results: map[name]?.results ?? 0, duration: '...' }
+      } else if (ev.status === 'done') {
+        const durationSec = startMs[name] ? (ts - startMs[name]) / 1000 : 0
+        // Parse result count from subtitle: "5 results found", "31 providers found", "6 rated"
+        const m = ev.subtitle?.match(
+          /(\d+)\s+(?:results?|listings?|entries|profiles?|providers?|pages?|records?|attorneys?|businesses?|rated)/i
+        )
+        const results = m ? parseInt(m[1]) : (map[name]?.results ?? 0)
+        map[name] = {
+          status: 'done',
+          results,
+          duration: durationSec > 0 ? `${durationSec.toFixed(1)}s` : '',
+        }
+      }
+    }
+    return map
+  }, [liveEvents])
+
+  const agentsComplete = Object.values(agentStatus).filter((a) => a.status === 'done').length
+  const agentsRunning  = Object.values(agentStatus).filter((a) => a.status === 'running').length
+  const resultsFound   = Object.values(agentStatus).reduce((sum, a) => sum + a.results, 0)
+  const totalAgents    = AGENTS.length
+  const progress = liveEvents.length === 0
+    ? 3
+    : Math.min(97, ((agentsComplete + agentsRunning * 0.5) / totalAgents) * 100)
 
   if (showResults) {
     return (
@@ -110,9 +138,9 @@ export function MissionControl({ query, phase, onComplete, onReset, onNewMission
           elapsed={elapsed}
           agentsComplete={totalAgents}
           agentsTotal={totalAgents}
-          resultsFound={47}
+          resultsFound={realResults?.length ?? resultsFound}
           confidence={92}
-          verifiedCount={47}
+          verifiedCount={realResults?.length ?? resultsFound}
           onNewMission={onNewMission}
         />
         <div className="flex-1 min-h-1 overflow-hidden">
@@ -120,6 +148,10 @@ export function MissionControl({ query, phase, onComplete, onReset, onNewMission
             onReset={onReset}
             onNewMission={() => { setShowResults(false); onReset() }}
             results={realResults}
+            phase={phase}
+            query={query}
+            stats={researchStats}
+            sourceScores={sourceScores}
           />
         </div>
       </div>
@@ -133,44 +165,77 @@ export function MissionControl({ query, phase, onComplete, onReset, onNewMission
         phase={phase}
         progress={progress}
         elapsed={elapsed}
-        agentsComplete={agentsDone}
+        agentsComplete={agentsComplete}
         agentsTotal={totalAgents}
         resultsFound={resultsFound}
         onNewMission={onNewMission}
       />
 
-      {/* Main content area: Timeline left, Agents right */}
       <div className="flex-1 flex overflow-hidden">
         {/* LEFT — Timeline (65%) */}
         <div className="flex-[65] overflow-hidden flex flex-col">
-          <div className="px-8 py-6 overflow-y-auto">
+          <div ref={scrollRef} className="px-8 py-6 overflow-y-auto h-full">
             <div className="flex items-center gap-3 mb-6">
-              <span className="text-[11px] font-medium uppercase tracking-[0.08em]" style={{ color: 'var(--text-faint)' }}>
+              <span
+                className="text-[11px] font-medium uppercase tracking-[0.08em]"
+                style={{ color: 'var(--text-faint)' }}
+              >
                 Timeline
               </span>
               <div className="flex-1 h-px" style={{ background: 'var(--border)' }} />
             </div>
-            <div ref={timelineRef} className="space-y-0">
-              {visibleEvents.map((ev, i) => (
-                <TimelineRow key={i} event={ev} index={i} />
-              ))}
-            </div>
+
+            {liveEvents.length === 0 ? (
+              <div className="flex items-center gap-2.5 py-4">
+                <span
+                  className="w-2 h-2 rounded-full shrink-0 animate-pulse-warm"
+                  style={{ background: 'var(--text-faint)' }}
+                />
+                <span className="text-[13px]" style={{ color: 'var(--text-faint)' }}>
+                  Connecting to backend...
+                </span>
+              </div>
+            ) : (
+              <div className="space-y-0">
+                {liveEvents.map((ev, i) => (
+                  <TimelineRow key={ev.id || i} event={ev} index={i} />
+                ))}
+              </div>
+            )}
           </div>
         </div>
 
         {/* RIGHT — Agents (35%) */}
-        <div className="flex-[35] border-l overflow-hidden flex flex-col" style={{ borderColor: 'var(--border)', background: 'var(--surface-panel)' }}>
-          <div className="px-5 py-6 overflow-y-auto">
+        <div
+          className="flex-[35] border-l overflow-hidden flex flex-col"
+          style={{ borderColor: 'var(--border)', background: 'var(--surface-panel)' }}
+        >
+          <div className="px-5 py-6 overflow-y-auto h-full">
             <div className="flex items-center gap-3 mb-6">
-              <span className="text-[11px] font-medium uppercase tracking-[0.08em]" style={{ color: 'var(--text-faint)' }}>
+              <span
+                className="text-[11px] font-medium uppercase tracking-[0.08em]"
+                style={{ color: 'var(--text-faint)' }}
+              >
                 Agents
               </span>
               <div className="flex-1 h-px" style={{ background: 'var(--border)' }} />
             </div>
             <div className="space-y-2">
-              {AGENT_SCRIPT.map((agent) => (
-                <AgentCard key={agent.id} agent={agent} currentStep={currentStep} />
-              ))}
+              {AGENTS.map((agent) => {
+                const s = agentStatus[agent.name] ?? {
+                  status: 'queued' as const,
+                  results: 0,
+                  duration: '',
+                }
+                return (
+                  <AgentCard
+                    key={agent.name}
+                    name={agent.name}
+                    domain={agent.domain}
+                    state={s}
+                  />
+                )
+              })}
             </div>
           </div>
         </div>
@@ -179,17 +244,19 @@ export function MissionControl({ query, phase, onComplete, onReset, onNewMission
   )
 }
 
-function TimelineRow({ event, index }: { event: TimelineEvent; index: number }) {
+function TimelineRow({ event, index }: { event: LiveEvent; index: number }) {
+  const timeDisplay = new Date(event.created_at).toLocaleTimeString('en-US', { hour12: false })
+
   return (
     <motion.div
       initial={{ opacity: 0, y: 6 }}
       animate={{ opacity: 1, y: 0 }}
-      transition={{ duration: 0.25, ease: 'easeOut', delay: index * 0.08 }}
+      transition={{ duration: 0.25, ease: 'easeOut', delay: index < 8 ? index * 0.04 : 0 }}
       className="flex items-start gap-4 py-3 border-b last:border-0"
       style={{ borderColor: 'var(--border)' }}
     >
       <div className="mt-0.5 w-5 shrink-0 flex justify-center">
-        {event.dot === 'done' && (
+        {event.status === 'done' && (
           <motion.div
             initial={{ scale: 0 }}
             animate={{ scale: 1 }}
@@ -198,61 +265,51 @@ function TimelineRow({ event, index }: { event: TimelineEvent; index: number }) 
             <Check size={14} strokeWidth={2.5} style={{ color: 'var(--success)' }} />
           </motion.div>
         )}
-        {event.dot === 'active' && (
-          <span className="w-2 h-2 rounded-full mt-1 animate-pulse-warm" style={{ background: 'var(--text-primary)' }} />
+        {(event.status === 'running' || event.status === 'active') && (
+          <span
+            className="w-2 h-2 rounded-full mt-1 animate-pulse-warm"
+            style={{ background: 'var(--text-primary)' }}
+          />
         )}
-        {event.dot === 'warn' && (
+        {event.status === 'warn' && (
           <AlertTriangle size={14} strokeWidth={1.5} style={{ color: 'var(--warning)' }} />
-        )}
-        {event.dot === 'idle' && (
-          <span className="text-[12px] font-mono-ui mt-0.5" style={{ color: 'var(--text-faint)' }}>—</span>
         )}
       </div>
 
       <div className="flex-1 min-w-0">
         <div className="flex items-baseline justify-between gap-4">
-          <span className="text-[14px] font-medium leading-snug" style={{ color: 'var(--text-primary)', fontVariantNumeric: 'tabular-nums' }}>
+          <span
+            className="text-[14px] font-medium leading-snug"
+            style={{ color: 'var(--text-primary)' }}
+          >
             {event.title}
           </span>
-          <div className="flex items-center gap-3 shrink-0">
-            <span className="text-[11px] font-variant-tnum font-mono-ui" style={{ color: 'var(--text-faint)' }}>
-              {event.sub ? '0.8s' : ''}
-            </span>
-            <span className="text-[11px] font-variant-tnum font-mono-ui" style={{ color: 'var(--text-faint)' }}>
-              {formatTime(event.t)}
-            </span>
-          </div>
+          <span
+            className="text-[11px] font-mono-ui shrink-0 tabular-nums"
+            style={{ color: 'var(--text-faint)' }}
+          >
+            {timeDisplay}
+          </span>
         </div>
-        {event.sub && (
+        {event.subtitle && (
           <p className="text-[13px] mt-0.5 leading-snug" style={{ color: 'var(--text-muted)' }}>
-            {event.sub}
+            {event.subtitle}
           </p>
-        )}
-        {event.dot === 'active' && event.progress !== undefined && (
-          <div className="mt-2 h-[3px] rounded-full w-48 overflow-hidden" style={{ background: 'var(--border)' }}>
-            <motion.div
-              className="h-full rounded-full"
-              style={{ background: 'var(--text-primary)' }}
-              animate={{ width: `${event.progress}%` }}
-              transition={{ duration: 0.4 }}
-            />
-          </div>
         )}
       </div>
     </motion.div>
   )
 }
 
-function AgentCard({ agent, currentStep }: { agent: AgentDef; currentStep: number }) {
-  let status: 'queued' | 'running' | 'done' = 'queued'
-  if (currentStep >= agent.endAt) status = 'done'
-  else if (currentStep >= agent.startAt) status = 'running'
-
-  const progress =
-    status === 'done' ? 100
-    : status === 'running' ? Math.min(100, ((currentStep - agent.startAt) / (agent.endAt - agent.startAt)) * 100)
-    : 1
-
+function AgentCard({
+  name,
+  domain,
+  state,
+}: {
+  name: string
+  domain: string
+  state: AgentState
+}) {
   return (
     <motion.div
       layout
@@ -261,13 +318,13 @@ function AgentCard({ agent, currentStep }: { agent: AgentDef; currentStep: numbe
         minHeight: '60px',
         padding: '12px 14px',
         background: 'var(--surface-card)',
-        borderColor: status === 'running' ? 'var(--border-hi)' : 'var(--border)',
-        boxShadow: status === 'running' ? '0 0 0 1px var(--border-hi)' : 'none',
+        borderColor: state.status === 'running' ? 'var(--border-hi)' : 'var(--border)',
+        boxShadow: state.status === 'running' ? '0 0 0 1px var(--border-hi)' : 'none',
       }}
     >
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2.5">
-          {status === 'done' && (
+          {state.status === 'done' && (
             <motion.div
               initial={{ scale: 0 }}
               animate={{ scale: 1 }}
@@ -276,54 +333,63 @@ function AgentCard({ agent, currentStep }: { agent: AgentDef; currentStep: numbe
               <Check size={13} strokeWidth={2.5} style={{ color: 'var(--success)' }} />
             </motion.div>
           )}
-          {status === 'running' && (
-            <span className="w-1.5 h-1.5 rounded-full animate-pulse-warm" style={{ background: 'var(--text-primary)' }} />
+          {state.status === 'running' && (
+            <span
+              className="w-1.5 h-1.5 rounded-full animate-pulse-warm"
+              style={{ background: 'var(--text-primary)' }}
+            />
           )}
-          {status === 'queued' && (
-            <span className="text-[11px] font-mono-ui" style={{ color: 'var(--text-faint)' }}>—</span>
+          {state.status === 'queued' && (
+            <span className="text-[11px] font-mono-ui" style={{ color: 'var(--text-faint)' }}>
+              —
+            </span>
           )}
           <span className="text-[13px] font-medium" style={{ color: 'var(--text-primary)' }}>
-            {agent.name}
+            {name}
           </span>
         </div>
-        {status === 'done' && (
-          <span className="text-[11px] font-variant-tnum font-mono-ui" style={{ color: 'var(--text-faint)' }}>
-            {(agent.endAt - agent.startAt) * 1.5}s
+        {state.status === 'done' && state.duration && (
+          <span
+            className="text-[11px] font-mono-ui tabular-nums"
+            style={{ color: 'var(--text-faint)' }}
+          >
+            {state.duration}
           </span>
         )}
-        {status === 'running' && (
+        {state.status === 'running' && (
           <span className="text-[11px] animate-pulse" style={{ color: 'var(--text-muted)' }}>
             ...
           </span>
         )}
       </div>
+
       <div className="flex items-center justify-between mt-1 pl-[22px]">
         <span className="text-[11px]" style={{ color: 'var(--text-faint)' }}>
-          {agent.domain}
+          {domain}
         </span>
-        {agent.results > 0 && status === 'done' && (
-          <span className="text-[12px] font-variant-tnum" style={{ color: 'var(--text-secondary)' }}>
-            {agent.results} results
+        {state.results > 0 && state.status === 'done' && (
+          <span
+            className="text-[12px] font-variant-tnum"
+            style={{ color: 'var(--text-secondary)' }}
+          >
+            {state.results} results
           </span>
         )}
       </div>
-      {status === 'running' && (
-        <div className="mt-2.5 h-[2px] rounded-full overflow-hidden" style={{ background: 'var(--border)' }}>
+
+      {state.status === 'running' && (
+        <div
+          className="mt-2.5 h-[2px] rounded-full overflow-hidden"
+          style={{ background: 'var(--border)' }}
+        >
           <motion.div
             className="h-full rounded-full"
             style={{ background: 'var(--text-primary)' }}
-            animate={{ width: `${progress}%` }}
-            transition={{ duration: 0.5 }}
+            animate={{ width: ['20%', '65%', '40%', '75%', '20%'] }}
+            transition={{ duration: 3, repeat: Infinity, ease: 'easeInOut' }}
           />
         </div>
       )}
     </motion.div>
   )
-}
-
-function formatTime(t: number) {
-  const base = new Date()
-  base.setHours(10, 43, 12)
-  base.setSeconds(base.getSeconds() + t)
-  return base.toTimeString().slice(0, 8)
 }
