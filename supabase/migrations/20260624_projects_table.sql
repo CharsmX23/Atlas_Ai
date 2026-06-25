@@ -1,0 +1,2 @@
+-- projects table stub: already applied to remote.
+-- Full idempotent creation is in 20260625000001_create_missing_tables.sql.
