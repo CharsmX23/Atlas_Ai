@@ -85,7 +85,8 @@ export function MissionControl({
   useEffect(() => {
     if (phase === 'complete' && !showResults && !completedRef.current) {
       completedRef.current = true
-      setTimeout(() => setShowResults(true), 400)
+      // Give realResults time to populate from parent before mounting ResultsView
+      setTimeout(() => setShowResults(true), 1500)
     }
   }, [phase, showResults])
 
@@ -249,15 +250,7 @@ export function MissionControl({
                   )}
                 </div>
               ) : (
-                <div className="flex items-center gap-2.5 py-4">
-                  <span
-                    className="w-2 h-2 rounded-full shrink-0 animate-pulse-warm"
-                    style={{ background: 'var(--text-faint)' }}
-                  />
-                  <span className="text-[13px]" style={{ color: 'var(--text-faint)' }}>
-                    {connectionStatus === 'connecting' ? 'Connecting to backend…' : 'Waiting for events…'}
-                  </span>
-                </div>
+                <div />
               )
             ) : (
               <div className="space-y-0">
