@@ -89,6 +89,14 @@ export function MissionControl({
     }
   }, [phase, showResults])
 
+  // ALSO trigger when realResults arrives after phase is already complete
+  useEffect(() => {
+    if (phase === 'complete' && realResults && realResults.length > 0 && !showResults) {
+      completedRef.current = true
+      setShowResults(true)
+    }
+  }, [realResults, phase, showResults])
+
   // Auto-scroll timeline as new events arrive
   useEffect(() => {
     if (scrollRef.current) {
