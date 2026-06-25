@@ -29,11 +29,12 @@ function toBusinessResult(b: Record<string, unknown>, index: number): BusinessRe
       ? (b.source_urls as Record<string, string>)
       : {}
 
-  const licStr = asStr(b.license_information)
+  // column was renamed license_information → license_info in the DB migration
+  const licStr = asStr(b.license_info) || asStr(b.license_information)
 
   return {
     rank: asNum(b.rank, index + 1),
-    business_name: asStr(b.business_name) || 'Unknown',
+    business_name: asStr(b.business_name) || asStr(b.name) || 'Unknown',
     address: asStr(b.address),
     phone: {
       value: asStr(b.phone),
@@ -62,7 +63,7 @@ function toBusinessResult(b: Record<string, unknown>, index: number): BusinessRe
       ? {
           value: licStr,
           source: 'Government DB',
-          link: srcUrls.license_information || '',
+          link: srcUrls.license_info || srcUrls.license_information || '',
         }
       : null,
     certifications: asArr(b.certifications),
@@ -95,6 +96,11 @@ function ResearchInner() {
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('idle')
   const [liveBusinesses, setLiveBusinesses] = useState<BusinessResult[]>([])
   const [backendCheck, setBackendCheck] = useState<BackendCheckResult | null>(null)
+  // Reactive job ID — set when POST returns so polling useEffect can depend on it
+  const [activeJobId, setActiveJobId] = useState<string | null>(jobIdParam)
+  // Raw Supabase rows for the simple business cards section below the timeline
+  const [rawBusinesses, setRawBusinesses] = useState<Array<Record<string, unknown>>>([])
+
   // Increment each mission start to force MissionControl remount (clears internal timer/results state)
   const [missionKey, setMissionKey] = useState(0)
 
@@ -187,9 +193,29 @@ function ResearchInner() {
           }
         }
 
-        if (job?.status === 'complete') {
-          if (Array.isArray(businesses) && businesses.length > 0) {
-            setRealResults((businesses as Record<string, unknown>[]).map(toBusinessResult))
+        if (job?.status === 'complete' || job?.status === 'completed') {
+          // Prefer Supabase order (confidence_score DESC) over backend response order
+          const jobId = jobIdRef.current
+          if (jobId) {
+            const { data: sbBiz } = await supabase
+              .from('businesses')
+              .select('*')
+              .eq('job_id', jobId)
+              .order('confidence_score', { ascending: false })
+            if (sbBiz && sbBiz.length > 0) {
+              const mapped = (sbBiz as Record<string, unknown>[]).map(toBusinessResult)
+              setRealResults(mapped)
+              setLiveBusinesses(mapped)
+            } else if (Array.isArray(businesses) && businesses.length > 0) {
+              // Fallback to backend response if Supabase returns nothing yet
+              const mapped = (businesses as Record<string, unknown>[]).map(toBusinessResult)
+              setRealResults(mapped)
+              setLiveBusinesses(mapped)
+            }
+          } else if (Array.isArray(businesses) && businesses.length > 0) {
+            const mapped = (businesses as Record<string, unknown>[]).map(toBusinessResult)
+            setRealResults(mapped)
+            setLiveBusinesses(mapped)
           }
           if (search_summary && typeof search_summary === 'object') setResearchStats(search_summary)
           if (source_scores && typeof source_scores === 'object') setSourceScores(source_scores)
@@ -250,14 +276,16 @@ function ResearchInner() {
         'postgres_changes',
         { event: 'UPDATE', schema: 'public', table: 'research_jobs', filter: `id=eq.${jobId}` },
         async (payload) => {
-          if (payload.new.status === 'complete') {
+          if (payload.new.status === 'complete' || payload.new.status === 'completed') {
             const { data } = await supabase
               .from('businesses')
               .select('*')
               .eq('job_id', jobId)
-              .order('rank')
+              .order('confidence_score', { ascending: false })
             if (data && data.length > 0) {
-              setRealResults((data as Record<string, unknown>[]).map(toBusinessResult))
+              const mapped = (data as Record<string, unknown>[]).map(toBusinessResult)
+              setRealResults(mapped)
+              setLiveBusinesses(mapped)
             }
             setTimeout(() => setPhase('complete'), 800)
           }
@@ -278,6 +306,7 @@ function ResearchInner() {
     setLiveEvents([])
     setLiveBusinesses([])
     jobIdRef.current = null
+    setActiveJobId(null)
     backoffRef.current = 1000
     connectionStatusRef.current = 'connecting'
     setConnectionStatus('connecting')
@@ -317,6 +346,7 @@ function ResearchInner() {
         }
         console.log(`[Atlas AI] Job started: ${job_id}`)
         jobIdRef.current = job_id
+        setActiveJobId(job_id)
         subscribeToJob(job_id)
         pollJob(job_id, backendUrl)
       })
@@ -335,6 +365,7 @@ function ResearchInner() {
   const resetMission = useCallback(() => {
     _cleanup()
     jobIdRef.current = null
+    setActiveJobId(null)
     connectionStatusRef.current = 'idle'
     setConnectionStatus('idle')
     setQuery('')
@@ -342,10 +373,36 @@ function ResearchInner() {
     setRealResults([])
     setLiveEvents([])
     setLiveBusinesses([])
+    setRawBusinesses([])
     setResearchStats(null)
     setSourceScores(null)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  // ── Direct Supabase poll — fires whenever activeJobId is set ───────────────
+  // Bypasses Realtime subscription issues. Populates both the mapped liveBusinesses
+  // (for MissionControl / ResultsView) and rawBusinesses (for the simple cards below).
+  useEffect(() => {
+    if (!activeJobId) return
+
+    const fetchBusinesses = async () => {
+      const { data } = await supabase
+        .from('businesses')
+        .select('*')
+        .eq('job_id', activeJobId)
+        .order('confidence_score', { ascending: false })
+      if (data && data.length > 0) {
+        setRawBusinesses(data as Record<string, unknown>[])
+        const mapped = (data as Record<string, unknown>[]).map(toBusinessResult)
+        setLiveBusinesses(mapped)
+        setRealResults(mapped)
+      }
+    }
+
+    fetchBusinesses()
+    const interval = setInterval(fetchBusinesses, 2000)
+    return () => clearInterval(interval)
+  }, [activeJobId])
 
   // After job complete: do one final fetch to ensure we have all results
   // (pollJob transitions to complete, but Realtime path skips the final fetch)
@@ -355,17 +412,33 @@ function ResearchInner() {
     const jobId = jobIdRef.current
     if (!backendUrl || !jobId) return
 
-    const fetchFinal = () =>
+    const fetchFinal = async () => {
+      // Primary: fetch from Supabase ordered by confidence_score
+      const { data: sbBiz } = await supabase
+        .from('businesses')
+        .select('*')
+        .eq('job_id', jobId)
+        .order('confidence_score', { ascending: false })
+      if (sbBiz && sbBiz.length > 0) {
+        const mapped = (sbBiz as Record<string, unknown>[]).map(toBusinessResult)
+        setRealResults(mapped)
+        setLiveBusinesses(mapped)
+      }
+      // Also hit backend for stats/source_scores
       fetch(`${backendUrl}/research/${jobId}`)
         .then((r) => r.json())
         .then(({ businesses, source_scores, search_summary }) => {
-          if (Array.isArray(businesses) && businesses.length > 0) {
-            setRealResults((businesses as Record<string, unknown>[]).map(toBusinessResult))
+          // Only use backend businesses as fallback if Supabase returned nothing
+          if (!sbBiz?.length && Array.isArray(businesses) && businesses.length > 0) {
+            const mapped = (businesses as Record<string, unknown>[]).map(toBusinessResult)
+            setRealResults(mapped)
+            setLiveBusinesses(mapped)
           }
           if (search_summary && typeof search_summary === 'object') setResearchStats(search_summary)
           if (source_scores && typeof source_scores === 'object') setSourceScores(source_scores)
         })
         .catch(() => {})
+    }
 
     fetchFinal()
     const t = setTimeout(fetchFinal, 3000)
@@ -402,22 +475,90 @@ function ResearchInner() {
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
               transition={{ duration: 0.2 }}
-              className="h-full"
+              className="flex flex-col h-full overflow-y-auto"
             >
-              <MissionControl
-                query={query}
-                phase={phase}
-                onComplete={handleComplete}
-                onReset={resetMission}
-                onNewMission={startMission}
-                onRetry={() => startMission(query)}
-                realResults={realResults}
-                liveBusinesses={liveBusinesses}
-                liveEvents={liveEvents}
-                researchStats={researchStats}
-                sourceScores={sourceScores}
-                connectionStatus={connectionStatus}
-              />
+              {/* Main mission control — fixed height so it doesn't collapse when businesses appear */}
+              <div style={{ height: rawBusinesses.length > 0 ? '60vh' : '100%', minHeight: '400px', flexShrink: 0 }}>
+                <MissionControl
+                  query={query}
+                  phase={phase}
+                  onComplete={handleComplete}
+                  onReset={resetMission}
+                  onNewMission={startMission}
+                  onRetry={() => startMission(query)}
+                  realResults={realResults}
+                  liveBusinesses={liveBusinesses}
+                  liveEvents={liveEvents}
+                  researchStats={researchStats}
+                  sourceScores={sourceScores}
+                  connectionStatus={connectionStatus}
+                />
+              </div>
+
+              {/* Business results — visible immediately below timeline when any businesses exist */}
+              {rawBusinesses.length > 0 && (
+                <div style={{ padding: '2rem', flexShrink: 0 }}>
+                  <h3 style={{ color: 'var(--text-primary)', marginBottom: '1rem', fontSize: '15px', fontWeight: 600 }}>
+                    Results ({rawBusinesses.length})
+                  </h3>
+                  {rawBusinesses.map((biz, i) => (
+                    <div
+                      key={(biz.id as string) || i}
+                      style={{
+                        background: 'var(--surface-card)',
+                        border: '1px solid var(--border)',
+                        borderRadius: '8px',
+                        padding: '1rem',
+                        marginBottom: '0.75rem',
+                        color: 'var(--text-primary)',
+                      }}
+                    >
+                      <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '0.5rem' }}>
+                        <strong style={{ fontSize: '14px' }}>
+                          #{i + 1} {(biz.business_name as string) || (biz.name as string) || 'Unknown'}
+                        </strong>
+                        <span style={{ color: 'var(--success)', fontSize: '13px', fontWeight: 600 }}>
+                          {(biz.confidence_score as number) || 0}%
+                        </span>
+                      </div>
+                      {String(biz.phone ?? '') && (
+                        <div style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '0.25rem' }}>
+                          📞 {String(biz.phone)}
+                        </div>
+                      )}
+                      {String(biz.website ?? '') && (
+                        <div style={{ fontSize: '13px', marginBottom: '0.25rem' }}>
+                          🌐{' '}
+                          <a
+                            href={String(biz.website)}
+                            target="_blank"
+                            rel="noreferrer"
+                            style={{ color: '#60a5fa' }}
+                          >
+                            {String(biz.website)}
+                          </a>
+                        </div>
+                      )}
+                      {String(biz.address ?? '') && (
+                        <div style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '0.25rem' }}>
+                          📍 {String(biz.address)}
+                        </div>
+                      )}
+                      {String(biz.email ?? '') && (
+                        <div style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '0.25rem' }}>
+                          ✉️ {String(biz.email)}
+                        </div>
+                      )}
+                      {String(biz.rating ?? '') && (
+                        <div style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
+                          ⭐ {String(biz.rating)}
+                          {biz.review_count ? ` (${biz.review_count} reviews)` : ''}
+                        </div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
             </motion.div>
           )}
         </div>
