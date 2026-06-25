@@ -77,7 +77,7 @@ export function MissionControl({
     if (last?.title === 'Mission complete') {
       completedRef.current = true
       onComplete()
-      setTimeout(() => setShowResults(true), 2000)
+      setTimeout(() => setShowResults(true), 400)
     }
   }, [liveEvents, onComplete])
 
@@ -85,8 +85,7 @@ export function MissionControl({
   useEffect(() => {
     if (phase === 'complete' && !showResults && !completedRef.current) {
       completedRef.current = true
-      // Give realResults time to populate from parent before mounting ResultsView
-      setTimeout(() => setShowResults(true), 1500)
+      setTimeout(() => setShowResults(true), 400)
     }
   }, [phase, showResults])
 

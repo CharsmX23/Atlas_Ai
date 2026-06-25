@@ -132,7 +132,7 @@ function ResearchInner() {
         }
         if (search_summary && typeof search_summary === 'object') setResearchStats(search_summary)
         if (source_scores && typeof source_scores === 'object') setSourceScores(source_scores)
-        setTimeout(() => setPhase('complete'), 1500)
+        setTimeout(() => setPhase('complete'), 800)
       })
       .catch(() => { setPhase('complete') })
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -220,7 +220,7 @@ function ResearchInner() {
           }
           if (search_summary && typeof search_summary === 'object') setResearchStats(search_summary)
           if (source_scores && typeof source_scores === 'object') setSourceScores(source_scores)
-          setTimeout(() => setPhase('complete'), 1500)
+          setTimeout(() => setPhase('complete'), 800)
         } else {
           // Still running — schedule next poll
           pollTimeoutRef.current = setTimeout(attempt, 3000)
@@ -288,7 +288,7 @@ function ResearchInner() {
               setRealResults(mapped)
               setLiveBusinesses(mapped)
             }
-            setTimeout(() => setPhase('complete'), 1500)
+            setTimeout(() => setPhase('complete'), 800)
           }
         }
       )
