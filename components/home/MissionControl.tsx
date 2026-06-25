@@ -269,7 +269,7 @@ export function MissionControl({
 
             {/* ── LIVE RESULTS — stream in as businesses are found ── */}
             <AnimatePresence>
-              {liveBusinesses.length > 0 && (
+              {liveBusinesses.length > 0 && !realResults?.length && (
                 <motion.div
                   initial={{ opacity: 0, y: 8 }}
                   animate={{ opacity: 1, y: 0 }}
