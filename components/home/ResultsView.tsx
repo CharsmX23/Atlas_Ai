@@ -742,13 +742,22 @@ function BusinessCard({
               href={url}
               target="_blank"
               rel="noopener noreferrer"
-              className="text-[14px] hover:opacity-70 transition"
-              title={url}
+              style={{
+                fontSize: '11px',
+                padding: '2px 8px',
+                borderRadius: '4px',
+                border: '1px solid var(--border)',
+                color: 'var(--text-muted)',
+                textDecoration: 'none',
+                background: 'transparent',
+              }}
             >
-              {url.includes('linkedin') ? '🔗' :
-               url.includes('facebook') ? '📘' :
-               url.includes('instagram') ? '📷' :
-               url.includes('twitter') || url.includes('x.com') ? '🐦' : '🌐'}
+              {url.includes('twitter') || url.includes('x.com') ? 'Twitter' :
+               url.includes('linkedin') ? 'LinkedIn' :
+               url.includes('facebook') ? 'Facebook' :
+               url.includes('instagram') ? 'Instagram' :
+               url.includes('yelp') ? 'Yelp' :
+               url.includes('bbb') ? 'BBB' : 'Link'}
             </a>
           ))}
         </div>
