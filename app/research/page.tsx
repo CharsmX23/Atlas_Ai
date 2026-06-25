@@ -9,6 +9,7 @@ import { motion } from 'framer-motion'
 import { supabase } from '@/lib/supabase'
 import { testBackendConnection, type BackendCheckResult } from '@/lib/api'
 import { useSettings, SOURCE_BACKEND_KEYS } from '@/lib/settings-context'
+import { useResearch } from '@/lib/research-context'
 import { useSearchParams } from 'next/navigation'
 import type { BusinessResult, LiveEvent } from '@/components/home/constants'
 import type { RealtimeChannel } from '@supabase/supabase-js'
@@ -83,6 +84,7 @@ type ConnectionStatus = 'idle' | 'connecting' | 'connected' | 'failed'
 
 function ResearchInner() {
   const { settings, loaded: settingsLoaded } = useSettings()
+  const { setIsResearching } = useResearch()
   const searchParams = useSearchParams()
   const jobIdParam = searchParams.get('job_id')
 
@@ -132,9 +134,9 @@ function ResearchInner() {
         }
         if (search_summary && typeof search_summary === 'object') setResearchStats(search_summary)
         if (source_scores && typeof source_scores === 'object') setSourceScores(source_scores)
-        setTimeout(() => setPhase('complete'), 800)
+        setTimeout(() => { setPhase('complete'); setIsResearching(false) }, 800)
       })
-      .catch(() => { setPhase('complete') })
+      .catch(() => { setPhase('complete'); setIsResearching(false) })
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [jobIdParam])
 
@@ -220,7 +222,7 @@ function ResearchInner() {
           }
           if (search_summary && typeof search_summary === 'object') setResearchStats(search_summary)
           if (source_scores && typeof source_scores === 'object') setSourceScores(source_scores)
-          setTimeout(() => setPhase('complete'), 800)
+          setTimeout(() => { setPhase('complete'); setIsResearching(false) }, 800)
         } else {
           // Still running — schedule next poll
           pollTimeoutRef.current = setTimeout(attempt, 3000)
@@ -288,7 +290,7 @@ function ResearchInner() {
               setRealResults(mapped)
               setLiveBusinesses(mapped)
             }
-            setTimeout(() => setPhase('complete'), 800)
+            setTimeout(() => { setPhase('complete'); setIsResearching(false) }, 800)
           }
         }
       )
@@ -303,6 +305,7 @@ function ResearchInner() {
     setMissionKey((k) => k + 1)
     setQuery(q)
     setPhase('running')
+    setIsResearching(true)
     setRealResults([])
     setLiveEvents([])
     setLiveBusinesses([])
@@ -371,6 +374,7 @@ function ResearchInner() {
     setConnectionStatus('idle')
     setQuery('')
     setPhase('idle')
+    setIsResearching(false)
     setRealResults([])
     setLiveEvents([])
     setLiveBusinesses([])
@@ -444,7 +448,11 @@ function ResearchInner() {
     return () => clearTimeout(t)
   }, [phase])
 
-  const handleComplete = useCallback(() => setPhase('complete'), [])
+  const handleComplete = useCallback(() => {
+    setPhase('complete')
+    setIsResearching(false)
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   return (
     <AppLayout>

@@ -2,13 +2,13 @@
 
 import { useState, useEffect } from 'react'
 import Link from 'next/link'
-import { usePathname } from 'next/navigation'
+import { usePathname, useRouter } from 'next/navigation'
 import { useTheme } from '@/components/theme-provider'
 import { useSettings } from '@/lib/settings-context'
+import { useResearch } from '@/lib/research-context'
 import {
   Search,
   FolderOpen,
-  FileText,
   BarChart3,
   Settings,
   PanelLeftClose,
@@ -24,7 +24,6 @@ import { motion } from 'framer-motion'
 const navItems = [
   { label: 'Research',  href: '/research',  icon: Search },
   { label: 'Projects',  href: '/projects',  icon: FolderOpen },
-  { label: 'Reports',   href: '/reports',   icon: FileText },
   { label: 'Analytics', href: '/analytics', icon: BarChart3 },
   { label: 'Admin',     href: '/admin',     icon: ShieldCheck },
   { label: 'Settings',  href: '/settings',  icon: Settings },
@@ -82,9 +81,12 @@ interface SidebarProps {
 
 export function Sidebar({ mobileOpen = false, onMobileClose }: SidebarProps) {
   const pathname = usePathname()
+  const router = useRouter()
   const [collapsed, setCollapsed] = useState(false)
   const { theme, toggleTheme } = useTheme()
   const { settings } = useSettings()
+  const { isResearching, setIsResearching } = useResearch()
+  const [pendingHref, setPendingHref] = useState<string | null>(null)
 
   const backendStatus = useBackendStatus()
 
@@ -200,7 +202,15 @@ export function Sidebar({ mobileOpen = false, onMobileClose }: SidebarProps) {
               key={item.href}
               href={item.href}
               title={item.label}
-              onClick={onMobileClose}
+              onClick={(e) => {
+                // Intercept navigation away from /research while a mission is running
+                if (isResearching && item.href !== '/research' && pathname.startsWith('/research')) {
+                  e.preventDefault()
+                  setPendingHref(item.href)
+                } else {
+                  onMobileClose?.()
+                }
+              }}
               className={`
                 relative flex items-center rounded-lg transition-all duration-150 min-h-[44px]
                 justify-center md:justify-center lg:justify-start
@@ -232,7 +242,6 @@ export function Sidebar({ mobileOpen = false, onMobileClose }: SidebarProps) {
                 />
               )}
               <item.icon size={18} strokeWidth={1.5} className="shrink-0" />
-              {/* Label: mobile always, tablet hidden, desktop depends on collapsed */}
               <span
                 className={`text-[14px] font-medium truncate md:hidden ${!collapsed ? 'lg:block' : 'lg:hidden'}`}
               >
@@ -242,6 +251,49 @@ export function Sidebar({ mobileOpen = false, onMobileClose }: SidebarProps) {
           )
         })}
       </nav>
+
+      {/* ── Research-in-progress confirmation dialog ─────────────────── */}
+      {pendingHref && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center"
+          style={{ background: 'rgba(0,0,0,0.6)' }}
+          onClick={() => setPendingHref(null)}
+        >
+          <div
+            className="rounded-2xl border p-6 max-w-sm w-full mx-4 shadow-xl"
+            style={{ background: 'var(--surface-panel)', borderColor: 'var(--border)' }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <p className="text-[15px] font-semibold mb-1" style={{ color: 'var(--text-primary)' }}>
+              Research in progress
+            </p>
+            <p className="text-[13px] mb-5" style={{ color: 'var(--text-muted)' }}>
+              Leaving now will stop the current mission and lose all progress.
+            </p>
+            <div className="flex gap-3 justify-end">
+              <button
+                onClick={() => setPendingHref(null)}
+                className="px-4 py-2 rounded-lg text-[13px] font-medium border transition"
+                style={{ borderColor: 'var(--border)', color: 'var(--text-secondary)', background: 'transparent' }}
+              >
+                Stay on mission
+              </button>
+              <button
+                onClick={() => {
+                  setIsResearching(false)
+                  router.push(pendingHref)
+                  setPendingHref(null)
+                  onMobileClose?.()
+                }}
+                className="px-4 py-2 rounded-lg text-[13px] font-medium transition"
+                style={{ background: 'var(--error)', color: '#fff' }}
+              >
+                Leave anyway
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* ── Theme toggle ─────────────────────────────────────────────── */}
       <div className="shrink-0 px-2 pb-2">

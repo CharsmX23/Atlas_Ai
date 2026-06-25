@@ -3,6 +3,7 @@ import type { Metadata } from 'next'
 import { Playfair_Display, Inter } from 'next/font/google'
 import { ThemeProvider } from '@/components/theme-provider'
 import { SettingsProvider } from '@/lib/settings-context'
+import { ResearchProvider } from '@/lib/research-context'
 
 const playfair = Playfair_Display({
   subsets: ['latin'],
@@ -37,7 +38,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body className={`${inter.variable} ${playfair.variable} ${inter.className}`} style={{ overflowX: 'hidden' }}>
         <ThemeProvider>
           <SettingsProvider>
-            {children}
+            <ResearchProvider>
+              {children}
+            </ResearchProvider>
           </SettingsProvider>
         </ThemeProvider>
       </body>
