@@ -27,10 +27,10 @@ export default function ProjectDetail() {
       .select('*')
       .eq('id', id)
       .single()
-      .then(({ data }) => {
-        setProject(data)
-        setLoading(false)
-      })
+      .then(
+        ({ data }) => { setProject(data); setLoading(false) },
+        () => setLoading(false)   // table may not exist yet — show "not found" state
+      )
   }, [id])
 
   return (

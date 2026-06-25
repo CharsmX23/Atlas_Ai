@@ -41,10 +41,10 @@ export default function Projects() {
       .from('projects')
       .select('*')
       .order('created_at', { ascending: false })
-      .then(({ data }) => {
-        setProjects(data || [])
-        setLoading(false)
-      })
+      .then(
+        ({ data }) => { setProjects(data || []); setLoading(false) },
+        () => setLoading(false)   // table may not exist yet — show empty state
+      )
   }, [])
 
   // Realtime subscription

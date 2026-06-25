@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useEffect } from 'react'
 import Link from 'next/link'
 import { usePathname } from 'next/navigation'
 import { useTheme } from '@/components/theme-provider'
@@ -30,6 +30,51 @@ const navItems = [
   { label: 'Settings',  href: '/settings',  icon: Settings },
 ]
 
+type BackendStatus = 'checking' | 'ok' | 'error'
+
+function useBackendStatus(): BackendStatus {
+  const [status, setStatus] = useState<BackendStatus>('checking')
+
+  useEffect(() => {
+    const check = async () => {
+      const url = process.env.NEXT_PUBLIC_BACKEND_URL
+      if (!url) { setStatus('error'); return }
+      try {
+        const res = await fetch(`${url}/health`, { signal: AbortSignal.timeout(3000) })
+        const ct = res.headers.get('content-type') ?? ''
+        setStatus(res.ok && ct.includes('json') ? 'ok' : 'error')
+      } catch {
+        setStatus('error')
+      }
+    }
+
+    check()
+    const interval = setInterval(check, 30000)
+    return () => clearInterval(interval)
+  }, [])
+
+  return status
+}
+
+function BackendStatusDot({ status, showLabel }: { status: BackendStatus; showLabel?: boolean }) {
+  const color = { checking: 'var(--text-faint)', ok: 'var(--success)', error: 'var(--error)' }[status]
+  const label = { checking: 'Connecting…', ok: 'Backend online', error: 'Backend offline' }[status]
+
+  return (
+    <div className="flex items-center gap-1.5" title={label}>
+      <span
+        className={`w-1.5 h-1.5 rounded-full shrink-0 ${status === 'checking' ? 'animate-pulse' : ''}`}
+        style={{ background: color }}
+      />
+      {showLabel && (
+        <span className="text-[10px] font-medium" style={{ color }}>
+          {status === 'error' ? 'offline' : status === 'checking' ? '…' : 'online'}
+        </span>
+      )}
+    </div>
+  )
+}
+
 interface SidebarProps {
   mobileOpen?: boolean
   onMobileClose?: () => void
@@ -40,6 +85,8 @@ export function Sidebar({ mobileOpen = false, onMobileClose }: SidebarProps) {
   const [collapsed, setCollapsed] = useState(false)
   const { theme, toggleTheme } = useTheme()
   const { settings } = useSettings()
+
+  const backendStatus = useBackendStatus()
 
   const displayName = settings.displayName || 'Research Team'
   const initials = displayName
@@ -83,7 +130,7 @@ export function Sidebar({ mobileOpen = false, onMobileClose }: SidebarProps) {
             Atlas AI
           </div>
           <div
-            className="mt-1"
+            className="mt-1 flex items-center gap-2"
             style={{
               fontSize: '10px',
               fontWeight: 500,
@@ -94,13 +141,14 @@ export function Sidebar({ mobileOpen = false, onMobileClose }: SidebarProps) {
               fontFamily: 'var(--font-sans)',
             }}
           >
-            Autonomous<br />Intelligence
+            <span>Autonomous Intelligence</span>
+            <BackendStatusDot status={backendStatus} showLabel={backendStatus !== 'ok'} />
           </div>
         </div>
 
         {/* "A" — tablet always, desktop when collapsed */}
         <div
-          className={`hidden md:flex items-center justify-center w-full ${!collapsed ? 'lg:hidden' : ''}`}
+          className={`hidden md:flex flex-col items-center justify-center w-full gap-1 ${!collapsed ? 'lg:hidden' : ''}`}
           style={{
             fontFamily: 'var(--font-display)',
             fontStyle: 'italic',
@@ -110,6 +158,7 @@ export function Sidebar({ mobileOpen = false, onMobileClose }: SidebarProps) {
           }}
         >
           A
+          <BackendStatusDot status={backendStatus} />
         </div>
 
         {/* Collapse toggle — desktop only */}

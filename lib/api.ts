@@ -102,3 +102,43 @@ export async function healthCheck(): Promise<{ status: string; service: string }
 
   return res.json()
 }
+
+export type BackendCheckResult =
+  | { ok: true }
+  | { ok: false; reason: 'not_configured' }
+  | { ok: false; reason: 'returns_html'; url: string }
+  | { ok: false; reason: 'unreachable'; url: string; detail: string }
+
+/**
+ * Verify that the backend URL is configured and actually points to the FastAPI
+ * service, not a Vercel/Next.js deployment. Returns a typed result describing
+ * the failure reason so the UI can show an actionable message.
+ */
+export async function testBackendConnection(url: string): Promise<BackendCheckResult> {
+  if (!url) return { ok: false, reason: 'not_configured' }
+
+  try {
+    const res = await fetch(`${url}/health`, {
+      method: 'GET',
+      signal: AbortSignal.timeout(5000),
+    })
+
+    const contentType = res.headers.get('content-type') ?? ''
+    if (!contentType.includes('application/json')) {
+      console.error(
+        `[Atlas AI] Backend URL ${url}/health returned ${contentType} — likely pointing at a Next.js deployment`
+      )
+      return { ok: false, reason: 'returns_html', url }
+    }
+
+    if (!res.ok) {
+      return { ok: false, reason: 'unreachable', url, detail: `HTTP ${res.status}` }
+    }
+
+    return { ok: true }
+  } catch (err) {
+    const detail = err instanceof Error ? err.message : String(err)
+    console.error(`[Atlas AI] Backend health check failed for ${url}:`, detail)
+    return { ok: false, reason: 'unreachable', url, detail }
+  }
+}

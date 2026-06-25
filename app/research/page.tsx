@@ -7,6 +7,7 @@ import { BottomSearchBar } from '@/components/mission/BottomSearchBar'
 import { AppLayout } from '@/components/layout/AppLayout'
 import { motion } from 'framer-motion'
 import { supabase } from '@/lib/supabase'
+import { testBackendConnection, type BackendCheckResult } from '@/lib/api'
 import { useSettings, SOURCE_BACKEND_KEYS } from '@/lib/settings-context'
 import { useSearchParams } from 'next/navigation'
 import type { BusinessResult, LiveEvent } from '@/components/home/constants'
@@ -93,6 +94,7 @@ function ResearchInner() {
   const [sourceScores, setSourceScores] = useState<Record<string, number> | null>(null)
   const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>('idle')
   const [liveBusinesses, setLiveBusinesses] = useState<BusinessResult[]>([])
+  const [backendCheck, setBackendCheck] = useState<BackendCheckResult | null>(null)
   // Increment each mission start to force MissionControl remount (clears internal timer/results state)
   const [missionKey, setMissionKey] = useState(0)
 
@@ -100,6 +102,12 @@ function ResearchInner() {
   useEffect(() => {
     if (settingsLoaded) setMode(settings.mode)
   }, [settingsLoaded, settings.mode])
+
+  // Pre-flight: verify NEXT_PUBLIC_BACKEND_URL is pointing at the FastAPI service
+  useEffect(() => {
+    const url = process.env.NEXT_PUBLIC_BACKEND_URL ?? ''
+    testBackendConnection(url).then(setBackendCheck)
+  }, [])
 
   // Load job results when navigating from /reports with ?job_id=...
   useEffect(() => {
@@ -413,6 +421,57 @@ function ResearchInner() {
             </motion.div>
           )}
         </div>
+
+        {/* Backend mis-config warning — shown on idle only, dismissed once a mission starts */}
+        {phase === 'idle' && backendCheck && !backendCheck.ok && (
+          <motion.div
+            key="backend-warning"
+            initial={{ opacity: 0, y: 4 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ duration: 0.25 }}
+            className="shrink-0 px-6 pb-2"
+          >
+            <div
+              className="mx-auto max-w-[600px] flex items-start gap-2.5 rounded-xl border px-4 py-3 text-[13px]"
+              style={{
+                borderColor: 'rgba(234,179,8,0.3)',
+                background: 'rgba(234,179,8,0.07)',
+                color: 'var(--warning)',
+              }}
+            >
+              <span className="mt-px shrink-0 font-bold">⚠</span>
+              <div>
+                {backendCheck.reason === 'not_configured' && (
+                  <>
+                    <span className="font-semibold">NEXT_PUBLIC_BACKEND_URL is not set.</span>
+                    {' '}Add it in your Vercel project settings → Environment Variables. Real searches will not work.
+                  </>
+                )}
+                {backendCheck.reason === 'returns_html' && (
+                  <>
+                    <span className="font-semibold">Backend URL is returning HTML, not JSON.</span>
+                    {' '}
+                    <span className="font-mono text-[11px] opacity-70">
+                      {('url' in backendCheck ? backendCheck.url : '')}
+                    </span>
+                    {' '}is probably pointing at a Vercel/Next.js deployment instead of the Railway FastAPI service.
+                    Check your <span className="font-mono">NEXT_PUBLIC_BACKEND_URL</span> env var.
+                  </>
+                )}
+                {backendCheck.reason === 'unreachable' && (
+                  <>
+                    <span className="font-semibold">Backend unreachable.</span>
+                    {' '}
+                    <span className="font-mono text-[11px] opacity-70">
+                      {('url' in backendCheck ? backendCheck.url : '')}
+                    </span>
+                    {' '}— {'detail' in backendCheck ? backendCheck.detail : ''}. Check Railway is deployed and the URL is correct.
+                  </>
+                )}
+              </div>
+            </div>
+          </motion.div>
+        )}
 
         {/* Search bar — only on idle homepage, never on running/complete */}
         {phase === 'idle' && (
