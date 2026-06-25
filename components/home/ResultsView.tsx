@@ -736,30 +736,6 @@ function BusinessCard({
               {host}
             </span>
           ))}
-          {biz.social_profiles?.map((url) => (
-            <a
-              key={url}
-              href={url}
-              target="_blank"
-              rel="noopener noreferrer"
-              style={{
-                fontSize: '11px',
-                padding: '2px 8px',
-                borderRadius: '4px',
-                border: '1px solid var(--border)',
-                color: 'var(--text-muted)',
-                textDecoration: 'none',
-                background: 'transparent',
-              }}
-            >
-              {url.includes('twitter') || url.includes('x.com') ? 'Twitter' :
-               url.includes('linkedin') ? 'LinkedIn' :
-               url.includes('facebook') ? 'Facebook' :
-               url.includes('instagram') ? 'Instagram' :
-               url.includes('yelp') ? 'Yelp' :
-               url.includes('bbb') ? 'BBB' : 'Link'}
-            </a>
-          ))}
         </div>
         <button
           onClick={onToggleEvidence}
