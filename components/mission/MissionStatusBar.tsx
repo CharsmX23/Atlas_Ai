@@ -33,10 +33,10 @@ export function MissionStatusBar({
 }: MissionStatusBarProps) {
 
   const connDot = {
-    idle:       { bg: 'var(--text-faint)', pulse: false },
-    connecting: { bg: 'var(--text-faint)', pulse: true  },
-    connected:  { bg: 'var(--success)',    pulse: false },
-    failed:     { bg: 'var(--error)',      pulse: false },
+    idle:       { bg: 'var(--success)', pulse: false },
+    connecting: { bg: 'var(--success)', pulse: false },
+    connected:  { bg: 'var(--success)', pulse: false },
+    failed:     { bg: 'var(--error)',   pulse: false },
   }[connectionStatus]
   const [showInput, setShowInput] = useState(false)
   const [inputQuery, setInputQuery] = useState('')
@@ -92,7 +92,7 @@ export function MissionStatusBar({
                 title={connectionStatus}
               />
               <span className="text-[13px] font-medium" style={{ color: 'var(--text-primary)' }}>
-                {connectionStatus === 'failed' ? 'Unreachable' : connectionStatus === 'connected' ? 'Running' : 'Connecting…'}
+                {connectionStatus === 'failed' ? 'Unreachable' : 'Running'}
               </span>
             </div>
           </div>

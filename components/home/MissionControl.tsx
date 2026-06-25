@@ -77,7 +77,7 @@ export function MissionControl({
     if (last?.title === 'Mission complete') {
       completedRef.current = true
       onComplete()
-      setTimeout(() => setShowResults(true), 1200)
+      setTimeout(() => setShowResults(true), 2000)
     }
   }, [liveEvents, onComplete])
 
