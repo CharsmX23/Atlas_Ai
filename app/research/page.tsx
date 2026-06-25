@@ -194,7 +194,7 @@ function ResearchInner() {
           }
         }
 
-        if (job?.status === 'complete' || job?.status === 'completed' || (job?.status === 'failed' && businesses?.length > 0)) {
+        if (job?.status === 'complete' || job?.status === 'completed' || job?.status === 'failed' || (job?.status === 'failed' && businesses?.length > 0)) {
           // Prefer Supabase order (confidence_score DESC) over backend response order
           const jobId = jobIdRef.current
           if (jobId) {
@@ -277,7 +277,7 @@ function ResearchInner() {
         'postgres_changes',
         { event: 'UPDATE', schema: 'public', table: 'research_jobs', filter: `id=eq.${jobId}` },
         async (payload) => {
-          if (payload.new.status === 'complete' || payload.new.status === 'completed') {
+          if (payload.new.status === 'complete' || payload.new.status === 'completed' || payload.new.status === 'failed') {
             const { data } = await supabase
               .from('businesses')
               .select('*')
