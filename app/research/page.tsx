@@ -194,7 +194,7 @@ function ResearchInner() {
           }
         }
 
-        if (job?.status === 'complete' || job?.status === 'completed') {
+        if (job?.status === 'complete' || job?.status === 'completed' || (job?.status === 'failed' && businesses?.length > 0)) {
           // Prefer Supabase order (confidence_score DESC) over backend response order
           const jobId = jobIdRef.current
           if (jobId) {
