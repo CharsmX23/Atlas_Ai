@@ -81,21 +81,18 @@ export function MissionControl({
     }
   }, [liveEvents, onComplete])
 
-  // Phase flip from outside (polling/direct-fetch path)
+  // Phase flip from outside (polling/direct-fetch path) — also reacts to realResults arriving
   useEffect(() => {
     if (phase === 'complete' && !showResults && !completedRef.current) {
       completedRef.current = true
-      setTimeout(() => setShowResults(true), 400)
+      setTimeout(() => setShowResults(true), 500)
     }
-  }, [phase, showResults])
-
-  // ALSO trigger when realResults arrives after phase is already complete
-  useEffect(() => {
-    if (phase === 'complete' && realResults && realResults.length > 0 && !showResults) {
+    // Immediately show if results are already available (beats the 500ms timeout)
+    if (realResults && realResults.length > 0 && phase === 'complete' && !showResults) {
       completedRef.current = true
       setShowResults(true)
     }
-  }, [realResults, phase, showResults])
+  }, [phase, showResults, realResults])
 
   // Auto-scroll timeline as new events arrive
   useEffect(() => {
@@ -269,7 +266,7 @@ export function MissionControl({
 
             {/* ── LIVE RESULTS — stream in as businesses are found ── */}
             <AnimatePresence>
-              {liveBusinesses.length > 0 && !realResults?.length && (
+              {liveBusinesses.length > 0 && !(realResults && realResults.length > 0) && (
                 <motion.div
                   initial={{ opacity: 0, y: 8 }}
                   animate={{ opacity: 1, y: 0 }}
