@@ -62,9 +62,14 @@ export default function Analytics() {
   const [hasData, setHasData] = useState(false)
 
   const fetchAll = useCallback(async () => {
-    const [{ data: jobs }, { data: businesses }] = await Promise.all([
+    const [
+      { data: jobs },
+      { data: businesses },
+      { count: bizCount },
+    ] = await Promise.all([
       supabase.from('research_jobs').select('*').order('created_at', { ascending: false }),
       supabase.from('businesses').select('confidence_score, website, phone, working_hours, license_info'),
+      supabase.from('businesses').select('*', { count: 'exact', head: true }),
     ])
 
     if (!jobs || jobs.length === 0) {
@@ -75,20 +80,23 @@ export default function Analytics() {
 
     setHasData(true)
 
-    // Stat cards
-    const totalBusinesses = jobs.reduce((s, j) => s + (j.businesses_found ?? 0), 0)
-    const avgConfidence = businesses && businesses.length > 0
-      ? Math.round(businesses.reduce((s, b) => s + (b.confidence_score ?? 0), 0) / businesses.length)
+    // BUG 1 fix: use direct count from businesses table, not businesses_found on jobs
+    const totalBusinesses = bizCount ?? 0
+
+    // BUG 2 fix: avg from businesses table, filter nulls, scores are already 0-100
+    const scored = (businesses ?? []).filter(b => b.confidence_score != null)
+    const avgConfidence = scored.length > 0
+      ? Math.round(scored.reduce((s, b) => s + (b.confidence_score as number), 0) / scored.length)
       : 0
 
-    const stopwords = new Set(['in', 'the', 'a', 'an', 'for', 'and', 'or', 'near', 'of', 'to', 'at', 'with', 'by'])
-    const wordCount: Record<string, number> = {}
+    // BUG 3 fix: extract text BEFORE " in " as the category, not individual words
+    const categoryCount: Record<string, number> = {}
     for (const job of jobs) {
-      for (const w of (job.query ?? '').toLowerCase().split(/\s+/)) {
-        if (w.length > 2 && !stopwords.has(w)) wordCount[w] = (wordCount[w] ?? 0) + 1
-      }
+      const q = (job.query ?? '').trim()
+      const category = q.includes(' in ') ? q.split(' in ')[0].toLowerCase().trim() : q.toLowerCase().trim()
+      if (category) categoryCount[category] = (categoryCount[category] ?? 0) + 1
     }
-    const topCategory = Object.entries(wordCount).sort((a, b) => b[1] - a[1])[0]?.[0] ?? '—'
+    const topCategory = Object.entries(categoryCount).sort((a, b) => b[1] - a[1])[0]?.[0] ?? '—'
 
     setStats({ totalSearches: jobs.length, totalBusinesses, avgConfidence, topCategory })
     setRecentJobs((jobs as Job[]).slice(0, 20))
@@ -123,9 +131,11 @@ export default function Analytics() {
   useEffect(() => {
     fetchAll()
 
+    // BUG 5 fix: subscribe to both tables for live updates
     const channel = supabase
       .channel('analytics-realtime')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'research_jobs' }, () => fetchAll())
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'businesses' }, () => fetchAll())
       .subscribe()
 
     return () => { supabase.removeChannel(channel) }
@@ -257,7 +267,12 @@ export default function Analytics() {
                           {job.businesses_verified ?? 0}
                         </td>
                         <td className="px-6 py-3.5 tabular-nums" style={{ color: 'var(--text-secondary)' }}>
-                          {job.research_duration_seconds != null ? `${job.research_duration_seconds}s` : '—'}
+                          {/* BUG 4 fix: format duration properly, treat null/0 as — */}
+                          {job.research_duration_seconds && job.research_duration_seconds > 0
+                            ? job.research_duration_seconds >= 60
+                              ? `${Math.floor(job.research_duration_seconds / 60)}m ${Math.round(job.research_duration_seconds % 60)}s`
+                              : `${Math.round(job.research_duration_seconds)}s`
+                            : '—'}
                         </td>
                         <td className="px-6 py-3.5" style={{ color: 'var(--text-muted)', whiteSpace: 'nowrap' }}>
                           {new Date(job.created_at).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })}
