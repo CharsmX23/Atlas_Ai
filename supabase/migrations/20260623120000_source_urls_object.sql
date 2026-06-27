@@ -1,1 +1,0 @@
--- stub: migration applied directly in Supabase
