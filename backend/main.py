@@ -5,6 +5,8 @@ import re
 from datetime import datetime, timedelta
 from urllib.parse import urlparse, urljoin
 
+import httpx
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -13,9 +15,11 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ── Config ──────────────────────────────────────────────────────────────
-SUPABASE_URL      = os.environ.get("SUPABASE_URL", "")
-SUPABASE_KEY      = os.environ.get("SUPABASE_SERVICE_KEY", "")
-ALLOWED_ORIGINS   = os.environ.get("ALLOWED_ORIGINS", "*").split(",")
+SUPABASE_URL          = os.environ.get("SUPABASE_URL", "")
+SUPABASE_KEY          = os.environ.get("SUPABASE_SERVICE_KEY", "")
+ALLOWED_ORIGINS       = os.environ.get("ALLOWED_ORIGINS", "*").split(",")
+SERPER_API_KEY        = os.environ.get("SERPER_API_KEY", "")
+GOOGLE_PLACES_API_KEY = os.environ.get("GOOGLE_PLACES_API_KEY", "")
 
 db = None
 if SUPABASE_URL and SUPABASE_KEY:
@@ -418,10 +422,252 @@ def result_to_business(r: dict, source_type: str, confidence: float) -> dict:
         "_source":             source_type,
     }
 
+# ── 3-Stage Places Pipeline ────────────────────────────────────────────────
+
+_SERPER_PLACES_URL  = "https://google.serper.dev/places"
+_GOOGLE_DETAILS_URL = "https://places.googleapis.com/v1/places/{place_id}"
+_GOOGLE_SEARCH_URL  = "https://places.googleapis.com/v1/places:searchText"
+_DETAILS_FIELD_MASK = (
+    "displayName,formattedAddress,nationalPhoneNumber,websiteUri,"
+    "regularOpeningHours,rating,userRatingCount,reviews,primaryTypeDisplayName"
+)
+_PIPELINE_TIMEOUT   = 15.0
+_PIPELINE_SEM       = 10
+
+
+async def _serper_discover(client: httpx.AsyncClient, query: str) -> list:
+    """Stage 1: Serper /places — structured local businesses, not organic web junk."""
+    try:
+        resp = await client.post(
+            _SERPER_PLACES_URL,
+            headers={"X-API-KEY": SERPER_API_KEY, "Content-Type": "application/json"},
+            json={"q": query, "gl": "us"},
+        )
+        resp.raise_for_status()
+        places = resp.json().get("places", [])
+        print(f"Serper /places: {len(places)} for '{query}'")
+        return places
+    except Exception as e:
+        print(f"Serper /places error: {e}")
+        return []
+
+
+async def _resolve_place_id(client: httpx.AsyncClient, place: dict) -> str | None:
+    """Serper returns a cid, not a Google place_id. Resolve via Text Search when needed."""
+    pid = place.get("placeId") or place.get("place_id")
+    if pid:
+        return pid
+    text = " ".join(filter(None, [place.get("title"), place.get("address")]))
+    if not text:
+        return None
+    try:
+        r = await client.post(
+            _GOOGLE_SEARCH_URL,
+            headers={
+                "X-Goog-Api-Key": GOOGLE_PLACES_API_KEY,
+                "X-Goog-FieldMask": "places.id",
+                "Content-Type": "application/json",
+            },
+            json={"textQuery": text},
+        )
+        r.raise_for_status()
+        hits = r.json().get("places", [])
+        return hits[0]["id"] if hits else None
+    except Exception:
+        return None
+
+
+async def _enrich_one(client: httpx.AsyncClient, sem: asyncio.Semaphore, place: dict) -> dict:
+    """Fetch Google Places details for one place; degrade gracefully on failure."""
+    async with sem:
+        try:
+            pid = await _resolve_place_id(client, place)
+            if not pid:
+                return place
+            r = await client.get(
+                _GOOGLE_DETAILS_URL.format(place_id=pid),
+                headers={
+                    "X-Goog-Api-Key": GOOGLE_PLACES_API_KEY,
+                    "X-Goog-FieldMask": _DETAILS_FIELD_MASK,
+                },
+            )
+            r.raise_for_status()
+            return {**place, "_details": r.json(), "_place_id": pid}
+        except Exception:
+            return place
+
+
+async def enrich_places_batch(client: httpx.AsyncClient, places: list) -> list:
+    """Stage 2: parallel enrichment, ≤10 concurrent. Per-call failure keeps Serper data."""
+    if not GOOGLE_PLACES_API_KEY:
+        return places
+    sem     = asyncio.Semaphore(_PIPELINE_SEM)
+    results = await asyncio.gather(
+        *[_enrich_one(client, sem, p) for p in places],
+        return_exceptions=True,
+    )
+    return [r if isinstance(r, dict) else places[i] for i, r in enumerate(results)]
+
+
+def _gget(place: dict, *keys, default=None):
+    """Prefer enriched Google detail (_details), fall back to Serper discovery field."""
+    d = place.get("_details", {})
+    for k in keys:
+        v = d.get(k)
+        if v not in (None, "", []):
+            return v
+    return default
+
+
+def _hours(place: dict):
+    h = place.get("_details", {}).get("regularOpeningHours", {})
+    return h.get("weekdayDescriptions") or None
+
+
+def _reviews(place: dict, n: int = 3) -> list:
+    raw = place.get("_details", {}).get("reviews", []) or []
+    out = []
+    for rv in raw[:n]:
+        txt = (rv.get("text") or {}).get("text") or (rv.get("originalText") or {}).get("text")
+        if txt:
+            out.append(txt.strip())
+    return out
+
+
+def confidence_for_place(place: dict, query_terms: list) -> int:
+    """Stage 3: score 0-100 — phone 25, website 20, hours 15, reviews 15, rating 10, vol 10, cat 5."""
+    phone   = _gget(place, "nationalPhoneNumber") or place.get("phoneNumber", "")
+    website = _gget(place, "websiteUri")          or place.get("website", "")
+    rating  = _gget(place, "rating")              or place.get("rating")
+    vol     = _gget(place, "userRatingCount")     or place.get("ratingCount") or 0
+    cat_raw = _gget(place, "primaryTypeDisplayName") or place.get("category", "")
+    cat     = ((cat_raw.get("text") if isinstance(cat_raw, dict) else cat_raw) or "").lower()
+
+    score = 0
+    if phone:           score += 25
+    if website:         score += 20
+    if _hours(place):   score += 15
+    if _reviews(place): score += 15
+    if rating:          score += 10
+    try:
+        score += min(10, (int(vol) / 50) * 10)
+    except (TypeError, ValueError):
+        pass
+    if any(t in cat for t in query_terms if t):
+        score += 5
+
+    return round(min(100, score))
+
+
+def place_to_business(place: dict, query_terms: list) -> dict:
+    """Convert an enriched place into an Atlas business dict (empty strings, not 'Not listed')."""
+    name_raw = _gget(place, "displayName") or place.get("title", "")
+    name     = (name_raw.get("text") if isinstance(name_raw, dict) else name_raw) or ""
+    cat_raw  = _gget(place, "primaryTypeDisplayName") or place.get("category") or place.get("type", "")
+    category = (cat_raw.get("text") if isinstance(cat_raw, dict) else cat_raw) or ""
+    phone    = _gget(place, "nationalPhoneNumber") or place.get("phoneNumber", "")
+    website  = _gget(place, "websiteUri")          or place.get("website", "")
+    address  = _gget(place, "formattedAddress")    or place.get("address", "")
+    rating_v = _gget(place, "rating")              or place.get("rating")
+    vol      = _gget(place, "userRatingCount")     or place.get("ratingCount") or ""
+    hours_l  = _hours(place)
+    hours    = " · ".join(hours_l) if hours_l else ""
+    revs     = _reviews(place)
+    conf     = confidence_for_place(place, query_terms)
+    place_id = place.get("_place_id") or place.get("placeId") or place.get("place_id", "")
+
+    source_urls: dict = {}
+    if website: source_urls["discovered"] = website
+    if phone:   source_urls["phone"]      = phone
+    if address: source_urls["address"]    = address
+
+    return {
+        "business_name":       name,
+        "normalized_name":     name.lower().strip(),
+        "place_id":            place_id,
+        "category":            category,
+        "website":             website,
+        "phone":               phone,
+        "address":             address,
+        "email":               "",
+        "rating":              str(rating_v) if rating_v is not None else "",
+        "review_count":        str(vol) if vol else "",
+        "working_hours":       hours,
+        "reviews":             revs,
+        "services":            [category] if category else [],
+        "specialties":         [],
+        "license_information": "",
+        "certifications":      [],
+        "awards":              [],
+        "social_profiles":     [],
+        "images_urls":         [],
+        "source_urls":         source_urls,
+        "source_count":        1,
+        "agent_source":        "serper_places",
+        "_confidence_base":    0.95,
+        "confidence_score":    conf,
+        "is_verified":         False,
+        "verification_status": "partial",
+        "has_conflict":        False,
+        "conflict_data":       None,
+    }
+
+
 # ── 12 AGENTS ─────────────────────────────────────────────────────────────
 
 async def agent_google(job_id: str, category: str, location: str, mode: str = "deep") -> list:
-    await emit(job_id, "Searching Google", f"Finding {category} in {location}...",
+    await emit(job_id, "Searching Google Places", f"Finding {category} in {location}...",
+               "running", "Google Search")
+
+    query = f"{category} in {location}"
+    _stop = {"and", "the", "for", "in", "near", "of", "a", "an"}
+    query_terms = [w for w in re.split(r"\W+", query.lower()) if len(w) > 2 and w not in _stop]
+
+    if SERPER_API_KEY:
+        try:
+            async with httpx.AsyncClient(timeout=_PIPELINE_TIMEOUT) as client:
+                # Stage 1 — Discovery
+                raw_places = await _serper_discover(client, query)
+                if not raw_places:
+                    raw_places = await _serper_discover(client, f"{category} {location}")
+
+                if raw_places:
+                    # Stage 2 — Enrichment (degrades gracefully per place if key missing)
+                    enriched = await enrich_places_batch(client, raw_places)
+
+                    # Stage 3 — Dedupe, score, filter, sort
+                    seen_ids: set = set()
+                    results: list = []
+                    for place in enriched:
+                        pid  = place.get("_place_id") or place.get("placeId") or place.get("place_id", "")
+                        name = (place.get("title") or "").lower()
+                        addr = (place.get("address") or "").lower()
+                        key  = pid or (re.sub(r"\W+", "", name) + re.sub(r"\W+", "", addr))
+                        if key and key in seen_ids:
+                            continue
+                        if key:
+                            seen_ids.add(key)
+
+                        conf    = confidence_for_place(place, query_terms)
+                        phone   = _gget(place, "nationalPhoneNumber") or place.get("phoneNumber", "")
+                        website = _gget(place, "websiteUri")          or place.get("website", "")
+
+                        if conf < 40 or (not phone and not website):
+                            continue
+
+                        results.append(place_to_business(place, query_terms))
+
+                    results.sort(key=lambda b: b.get("confidence_score", 0), reverse=True)
+
+                    if results:
+                        await emit(job_id, "Searching Google Places",
+                                   f"{len(results)} verified businesses found", "done", "Google Search")
+                        return results
+        except Exception as e:
+            print(f"Places pipeline error: {e}")
+
+    # Fallback — web search via DDG / Serper /search
+    await emit(job_id, "Searching Google", f"Web fallback for {category} in {location}...",
                "running", "Google Search")
 
     if mode == "fast":
@@ -437,15 +683,15 @@ async def agent_google(job_id: str, category: str, location: str, mode: str = "d
             ddg_search(f"top {category} near {location}", 10),
         )
 
-    seen, results = set(), []
+    seen, fallback = set(), []
     for r in [item for sublist in raw_lists for item in sublist]:
         url = r.get("href", "")
         if url not in seen:
             seen.add(url)
-            results.append(result_to_business(r, "google", 0.72))
+            fallback.append(result_to_business(r, "google", 0.72))
 
-    await emit(job_id, "Searching Google", f"{len(results)} results found", "done", "Google Search")
-    return results
+    await emit(job_id, "Searching Google", f"{len(fallback)} results found", "done", "Google Search")
+    return fallback
 
 
 async def agent_yelp(job_id: str, category: str, location: str) -> list:
@@ -773,6 +1019,28 @@ async def agent_website_detail(job_id: str, businesses: list) -> list:
 def deduplicate(businesses: list) -> tuple:
     from rapidfuzz import fuzz
 
+    # Primary dedup: collapse by place_id, falling back to normalized name+address
+    seen_keys: dict = {}
+    pid_deduped: list = []
+    for biz in businesses:
+        pid  = biz.get("place_id", "")
+        name = re.sub(r"\W+", "", (biz.get("business_name") or "").lower())
+        addr = re.sub(r"\W+", "", (biz.get("address") or "").lower())
+        key  = pid or (name + addr) or ""
+        if key and key in seen_keys:
+            existing = pid_deduped[seen_keys[key]]
+            for f in ["phone", "email", "website", "working_hours", "address", "rating"]:
+                if not existing.get(f) and biz.get(f):
+                    existing[f] = biz[f]
+            existing["source_count"] = existing.get("source_count", 1) + 1
+        else:
+            if key:
+                seen_keys[key] = len(pid_deduped)
+            pid_deduped.append(biz)
+
+    pid_removed = len(businesses) - len(pid_deduped)
+    businesses  = pid_deduped
+
     used, groups = set(), []
     for i, a in enumerate(businesses):
         if i in used:
@@ -819,7 +1087,7 @@ def deduplicate(businesses: list) -> tuple:
             base["source_count"] = base.get("source_count", 1) + 1
         merged.append(base)
 
-    return merged, len(businesses) - len(merged)
+    return merged, pid_removed + (len(businesses) - len(merged))
 
 
 # ── Confidence Scoring & Verification ────────────────────────────────────
@@ -829,31 +1097,43 @@ def score_and_detect_conflicts(businesses: list) -> list:
     Assign integer confidence scores (0–100) and set is_verified per business.
 
     Scoring rubric:
+      +25  has phone
       +20  has website
-      +20  has phone
-      +15  has address
-      +15  has working_hours
-      +15  has license_information
-      +10  source_urls has ≥ 2 distinct keys (cross-source verification)
-      + 5  has email
+      +15  has opening hours
+      +15  has reviews
+      +10  has rating
+      +10  review volume (1 pt per 50 reviews, max 10)
+      + 5  has category
     Max = 100
     """
+    NL = "Not listed"
+
+    def _has(biz: dict, field: str) -> bool:
+        v = biz.get(field)
+        return bool(v) and v != NL and v != [NL]
+
     for biz in businesses:
         score = 0
-        if biz.get("website"):                          score += 20
-        if biz.get("phone"):                            score += 20
-        if biz.get("address"):                          score += 15
-        if biz.get("working_hours"):                    score += 15
-        if biz.get("license_information"):              score += 15
-        if len(biz.get("source_urls") or {}) >= 2:     score += 10
-        if biz.get("email"):                            score +=  5
-        biz["confidence_score"] = score
+        if _has(biz, "phone"):         score += 25
+        if _has(biz, "website"):       score += 20
+        if _has(biz, "working_hours"): score += 15
+        reviews = biz.get("reviews", [])
+        if reviews and reviews != [NL]: score += 15
+        if _has(biz, "rating"):        score += 10
+        try:
+            vol = int(biz.get("review_count") or 0)
+            score += min(10, vol // 50)
+        except (TypeError, ValueError):
+            pass
+        if _has(biz, "category"):      score += 5
+
+        biz["confidence_score"] = min(100, score)
 
         # Verified: non-empty name + at least 2 of [phone, website, address, hours]
         contact = [biz.get("phone"), biz.get("website"),
                    biz.get("address"), biz.get("working_hours")]
-        present = sum(1 for f in contact if f)
-        biz["is_verified"] = bool(biz.get("business_name")) and present >= 2
+        present_count = sum(1 for f in contact if f and f != NL)
+        biz["is_verified"] = bool(biz.get("business_name")) and present_count >= 2
 
         if biz["is_verified"]:
             biz["verification_status"] = "verified"
@@ -865,6 +1145,15 @@ def score_and_detect_conflicts(businesses: list) -> list:
     return sorted(businesses, key=lambda b: b.get("confidence_score", 0), reverse=True)
 
 
+def _nl(val, default: str = "Not listed"):
+    """Return default for any falsy / empty value; stringify scalars."""
+    if val is None or val == "" or val == [] or val == {}:
+        return default
+    if isinstance(val, (list, dict)):
+        return val
+    return str(val)
+
+
 def prepare_for_supabase(biz: dict, job_id: str, rank: int) -> dict:
     biz.pop("_source", None)
     biz.pop("_confidence_base", None)
@@ -873,19 +1162,24 @@ def prepare_for_supabase(biz: dict, job_id: str, rank: int) -> dict:
         source_urls = {f"src_{i}": u for i, u in enumerate(source_urls)}
     # license_info accepts either field name agents might use
     license_info = biz.get("license_info") or biz.get("license_information") or None
+    reviews_raw  = biz.get("reviews", [])
+    reviews      = reviews_raw if isinstance(reviews_raw, list) else []
     return {
         "job_id":              job_id,
         "rank":                rank,
-        "business_name":       biz.get("business_name") or biz.get("name") or "",
+        "business_name":       biz.get("business_name") or biz.get("name") or "Not listed",
         "normalized_name":     biz.get("normalized_name", ""),
         "agent_source":        biz.get("agent_source", ""),
-        "address":             biz.get("address", ""),
-        "phone":               biz.get("phone", ""),
+        "place_id":            biz.get("place_id", ""),
+        "category":            _nl(biz.get("category", "")),
+        "address":             _nl(biz.get("address", "")),
+        "phone":               _nl(biz.get("phone", "")),
         "email":               biz.get("email", ""),
-        "website":             biz.get("website", ""),
-        "working_hours":       biz.get("working_hours", ""),
-        "rating":              str(biz.get("rating", "")),
-        "review_count":        str(biz.get("review_count", "")),
+        "website":             _nl(biz.get("website", "")),
+        "working_hours":       _nl(biz.get("working_hours", "")),
+        "rating":              _nl(str(biz.get("rating", ""))),
+        "review_count":        _nl(str(biz.get("review_count", ""))),
+        "reviews":             reviews if reviews else ["Not listed"],
         "services":            biz.get("services", [])        or [],
         "specialties":         biz.get("specialties", [])     or [],
         "license_info":        license_info,

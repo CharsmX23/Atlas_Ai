@@ -1,6 +1,6 @@
 # Atlas AI — Autonomous Business Research Platform
 
-**Chettinad CodeFest 2026 · Grand Finale · June 25, 2026**
+**Autonomous Business Intelligence Platform**
 
 Atlas AI is an autonomous intelligence platform that deploys 12 parallel research agents across the open web, cross-verifies data, removes duplicates with fuzzy matching, and streams live results to the browser in real time.
 
