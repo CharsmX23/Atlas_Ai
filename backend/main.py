@@ -1200,13 +1200,6 @@ def prepare_for_supabase(biz: dict, job_id: str, rank: int) -> dict:
 # ── Agent source name map (order must match asyncio.gather call below) ────
 _AGENT_SOURCE_NAMES = [
     "serper_google",
-    "yelp",
-    "yellowpages",
-    "linkedin",
-    "bbb",
-    "healthgrades",
-    "government",
-    "industry_dirs",
 ]
 
 
@@ -1283,18 +1276,11 @@ async def run_research(job_id: str, query: str, mode: str = "deep"):
             except Exception as e:
                 print(f"Cache check error: {e}")
 
-        await emit(job_id, "Launching 8 agents in parallel")
+        await emit(job_id, "Launching Places search")
 
-        # ── Run all agents concurrently ───────────────────────────────────
+        # ── Run discovery agent ───────────────────────────────────────────
         agent_results = await asyncio.gather(
             agent_google(job_id, category, location, mode),
-            agent_yelp(job_id, category, location),
-            agent_yellow_pages(job_id, category, location),
-            agent_linkedin(job_id, category, location),
-            agent_bbb(job_id, category, location),
-            agent_healthgrades(job_id, category, location),
-            agent_government(job_id, category, location),
-            agent_industry_dirs(job_id, category, location),
             return_exceptions=True,
         )
 
