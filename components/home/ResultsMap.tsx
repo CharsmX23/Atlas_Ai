@@ -1,14 +1,14 @@
 'use client'
 
 import { useEffect } from 'react'
+import L from 'leaflet'
 import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet'
 import type { BusinessResult } from './constants'
 
-// Fix Leaflet's broken default icon paths under webpack/Next.js
+// This file is only ever loaded on the client (ResultsView uses dynamic+ssr:false),
+// so the top-level L import is safe — Leaflet's window access never runs on the server.
 function fixLeafletIcons() {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const L = require('leaflet')
-  delete (L.Icon.Default.prototype as Record<string, unknown>)._getIconUrl
+  delete (L.Icon.Default.prototype as unknown as Record<string, unknown>)._getIconUrl
   L.Icon.Default.mergeOptions({
     iconUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon.png',
     iconRetinaUrl: 'https://unpkg.com/leaflet@1.9.4/dist/images/marker-icon-2x.png',
@@ -26,7 +26,6 @@ export function ResultsMap({ businesses }: Props) {
   const pinned = businesses.filter((b) => b.lat != null && b.lng != null)
   if (pinned.length === 0) return null
 
-  // Center on the first result; fit will handle the rest
   const center: [number, number] = [pinned[0].lat!, pinned[0].lng!]
 
   return (

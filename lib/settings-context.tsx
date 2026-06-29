@@ -4,33 +4,17 @@ import { createContext, useContext, useState, useEffect, useCallback, ReactNode 
 import { supabase } from '@/lib/supabase'
 
 export const ALL_SOURCES = [
-  'Google Search',
-  'Healthgrades',
-  'Yelp',
-  'LinkedIn',
-  'Yellow Pages',
-  'Facebook',
-  'BBB Verifier',
-  'Government License DB',
-  'Website Detail',
-  'Image Collector',
-  'Avvo / Justia',
-  'Quality Auditor',
+  'Discovering local businesses',
+  'Enriching contact details',
+  'Verifying & scoring results',
+  'Ranking by confidence',
 ]
 
 export const SOURCE_BACKEND_KEYS: Record<string, string> = {
-  'Google Search':        'serper_google',
-  'Healthgrades':         'healthgrades',
-  'Yelp':                 'yelp',
-  'LinkedIn':             'linkedin',
-  'Yellow Pages':         'yellowpages',
-  'Facebook':             'facebook',
-  'BBB Verifier':         'bbb',
-  'Government License DB':'government',
-  'Website Detail':       'website_detail',
-  'Image Collector':      'image_collector',
-  'Avvo / Justia':        'avvo',
-  'Quality Auditor':      'quality_auditor',
+  'Discovering local businesses': 'serper_places',
+  'Enriching contact details':    'google_places',
+  'Verifying & scoring results':  'confidence_scoring',
+  'Ranking by confidence':        'ranking',
 }
 
 export const CACHE_TTL_OPTIONS = ['1h', '6h', '12h', '1d', '2d', '7d']
