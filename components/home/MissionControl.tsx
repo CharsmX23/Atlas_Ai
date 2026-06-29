@@ -7,20 +7,12 @@ import type { BusinessResult, LiveEvent } from './constants'
 import { Check, AlertTriangle, RefreshCw } from 'lucide-react'
 import { motion, AnimatePresence } from 'framer-motion'
 
-// Exact agent_name values the backend emits — order matches display order
+// Exact agent_name values the backend emits — order matches pipeline execution
 const AGENTS = [
-  { name: 'Google Search',   domain: 'google.com' },
-  { name: 'Yelp',            domain: 'yelp.com' },
-  { name: 'Yellow Pages',    domain: 'yellowpages.com' },
-  { name: 'LinkedIn',        domain: 'linkedin.com' },
-  { name: 'Facebook',        domain: 'facebook.com' },
-  { name: 'BBB Verifier',    domain: 'bbb.org' },
-  { name: 'Healthgrades',    domain: 'healthgrades.com' },
-  { name: 'Avvo/Justia',     domain: 'avvo.com' },
-  { name: 'Gov License DB',  domain: 'gov' },
-  { name: 'Industry Dirs',   domain: 'angi.com' },
-  { name: 'Website Detail',  domain: 'web' },
-  { name: 'Quality Auditor', domain: 'internal' },
+  { name: 'Discovering local businesses', domain: 'serper.dev' },
+  { name: 'Enriching contact details',    domain: 'places.googleapis.com' },
+  { name: 'Verifying & scoring results',  domain: 'internal' },
+  { name: 'Ranking by confidence',        domain: 'internal' },
 ] as const
 
 interface AgentState {

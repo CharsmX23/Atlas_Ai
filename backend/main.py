@@ -429,7 +429,7 @@ _GOOGLE_DETAILS_URL = "https://places.googleapis.com/v1/places/{place_id}"
 _GOOGLE_SEARCH_URL  = "https://places.googleapis.com/v1/places:searchText"
 _DETAILS_FIELD_MASK = (
     "displayName,formattedAddress,nationalPhoneNumber,websiteUri,"
-    "regularOpeningHours,rating,userRatingCount,reviews,primaryTypeDisplayName"
+    "regularOpeningHours,rating,userRatingCount,reviews,primaryTypeDisplayName,location"
 )
 _PIPELINE_TIMEOUT   = 15.0
 _PIPELINE_SEM       = 10
@@ -589,6 +589,9 @@ def place_to_business(place: dict, query_terms: list) -> dict:
     revs     = _reviews(place)
     conf     = confidence_for_place(place, query_terms)
     place_id = place.get("_place_id") or place.get("placeId") or place.get("place_id", "")
+    loc      = place.get("_details", {}).get("location", {})
+    lat      = loc.get("latitude")  if isinstance(loc, dict) else None
+    lng      = loc.get("longitude") if isinstance(loc, dict) else None
 
     source_urls: dict = {}
     if website: source_urls["discovered"] = website
@@ -616,6 +619,8 @@ def place_to_business(place: dict, query_terms: list) -> dict:
         "social_profiles":     [],
         "images_urls":         [],
         "source_urls":         source_urls,
+        "lat":                 lat,
+        "lng":                 lng,
         "source_count":        1,
         "agent_source":        "serper_places",
         "_confidence_base":    0.95,
@@ -630,8 +635,8 @@ def place_to_business(place: dict, query_terms: list) -> dict:
 # ── 12 AGENTS ─────────────────────────────────────────────────────────────
 
 async def agent_google(job_id: str, category: str, location: str, mode: str = "deep") -> list:
-    await emit(job_id, "Searching Google Places", f"Finding {category} in {location}...",
-               "running", "Google Search")
+    await emit(job_id, "Discovering local businesses",
+               f"Serper /places · {category} in {location}", "running", "Discovering local businesses")
 
     query = f"{category} in {location}"
     _stop = {"and", "the", "for", "in", "near", "of", "a", "an"}
@@ -646,10 +651,12 @@ async def agent_google(job_id: str, category: str, location: str, mode: str = "d
                     raw_places = await _serper_discover(client, f"{category} {location}")
 
                 if raw_places:
-                    # Stage 2 — Enrichment (degrades gracefully per place if key missing)
+                    # Stage 2 — Enrichment
+                    await emit(job_id, "Enriching contact details",
+                               f"Google Places · {len(raw_places)} candidates", "running", "Enriching contact details")
                     enriched = await enrich_places_batch(client, raw_places)
 
-                    # Stage 3 — Dedupe, score, filter, sort
+                    # Stage 3 — Score, dedup, filter, sort
                     seen_ids: set = set()
                     results: list = []
                     for place in enriched:
@@ -674,15 +681,17 @@ async def agent_google(job_id: str, category: str, location: str, mode: str = "d
                     results.sort(key=lambda b: b.get("confidence_score", 0), reverse=True)
 
                     if results:
-                        await emit(job_id, "Searching Google Places",
-                                   f"{len(results)} verified businesses found", "done", "Google Search")
+                        await emit(job_id, "Enriching contact details",
+                                   f"{len(enriched)} places enriched", "done", "Enriching contact details")
+                        await emit(job_id, "Discovering local businesses",
+                                   f"{len(results)} businesses found", "done", "Discovering local businesses")
                         return results
         except Exception as e:
             print(f"Places pipeline error: {e}")
 
     # Fallback — web search via DDG / Serper /search
-    await emit(job_id, "Searching Google", f"Web fallback for {category} in {location}...",
-               "running", "Google Search")
+    await emit(job_id, "Discovering local businesses",
+               f"Web search fallback · {category} in {location}", "running", "Discovering local businesses")
 
     if mode == "fast":
         raw_lists = await asyncio.gather(
@@ -704,7 +713,8 @@ async def agent_google(job_id: str, category: str, location: str, mode: str = "d
             seen.add(url)
             fallback.append(result_to_business(r, "google", 0.72))
 
-    await emit(job_id, "Searching Google", f"{len(fallback)} results found", "done", "Google Search")
+    await emit(job_id, "Discovering local businesses",
+               f"{len(fallback)} results found", "done", "Discovering local businesses")
     return fallback
 
 
@@ -903,9 +913,9 @@ async def agent_industry_dirs(job_id: str, category: str, location: str) -> list
 
 async def agent_website_detail(job_id: str, businesses: list) -> list:
     top_n = min(15, len(businesses))
-    await emit(job_id, "Reading business websites",
-               f"Extracting full details from top {top_n} sites...",
-               "running", "Website Detail")
+    await emit(job_id, "Enriching contact details",
+               f"Scraping top {top_n} business websites...",
+               "running", "Enriching contact details")
 
     directory_domains = {
         "yelp.com","yellowpages.com","linkedin.com","facebook.com",
@@ -1023,8 +1033,8 @@ async def agent_website_detail(job_id: str, businesses: list) -> list:
             except Exception:
                 pass
 
-    await emit(job_id, "Website Detail", f"{enriched} sites scraped for full details",
-               "done", "Website Detail")
+    await emit(job_id, "Enriching contact details", f"{enriched} sites scraped for details",
+               "done", "Enriching contact details")
     return businesses
 
 
@@ -1202,6 +1212,8 @@ def prepare_for_supabase(biz: dict, job_id: str, rank: int) -> dict:
         "social_profiles":     biz.get("social_profiles", []) or [],
         "images_urls":         biz.get("images_urls", [])     or [],
         "source_urls":         source_urls,
+        "lat":                 biz.get("lat"),
+        "lng":                 biz.get("lng"),
         "source_count":        biz.get("source_count", 1),
         "confidence_score":    biz.get("confidence_score", 0),
         "is_verified":         biz.get("is_verified", False),
@@ -1321,31 +1333,24 @@ async def run_research(job_id: str, query: str, mode: str = "deep"):
                    "Verifying phone numbers, emails, websites across sources...",
                    "running")
 
-        # ── Deduplication ─────────────────────────────────────────────────
-        await emit(job_id, "Running deduplication",
-                   "RapidFuzz fuzzy matching on names, phones, domains...",
-                   "running", "Dedup Engine")
+        # ── Deduplication + confidence scoring ────────────────────────────
+        await emit(job_id, "Verifying & scoring results",
+                   "Deduplication + confidence scoring...",
+                   "running", "Verifying & scoring results")
         deduped, removed = deduplicate(all_businesses)
-        await emit(job_id, "Deduplication complete",
-                   f"{removed} duplicates merged · {len(deduped)} unique businesses",
-                   "done", "Dedup Engine")
-
-        # ── Confidence scoring + verification ─────────────────────────────
-        await emit(job_id, "Computing confidence scores",
-                   "Field-completeness scoring (0–100)...", "running", "Confidence Engine")
         scored = score_and_detect_conflicts(deduped)
         businesses_verified = sum(1 for b in scored if b.get("is_verified"))
-        await emit(job_id, "Confidence scores computed",
-                   f"{businesses_verified}/{len(scored)} businesses verified",
-                   "done", "Confidence Engine")
+        await emit(job_id, "Verifying & scoring results",
+                   f"{businesses_verified}/{len(scored)} verified · {removed} duplicates removed",
+                   "done", "Verifying & scoring results")
 
-        # ── Quality audit ─────────────────────────────────────────────────
+        # ── Quality audit + ranking ────────────────────────────────────────
         website_pct   = sum(1 for b in scored if b.get("website")) / max(len(scored), 1)
         phone_pct     = sum(1 for b in scored if b.get("phone"))   / max(len(scored), 1)
         quality_score = round((website_pct * 0.4 + phone_pct * 0.6) * 100)
-        await emit(job_id, "Quality audit",
-                   f"Score: {quality_score}% · Website: {website_pct:.0%} · Phone: {phone_pct:.0%}",
-                   "done", "Quality Auditor")
+        await emit(job_id, "Ranking by confidence",
+                   f"Quality {quality_score}% · sorting top results",
+                   "running", "Ranking by confidence")
 
         # ── Save businesses ───────────────────────────────────────────────
         top_businesses = scored[:100]
@@ -1358,6 +1363,8 @@ async def run_research(job_id: str, query: str, mode: str = "deep"):
                 None,
                 lambda: db.table("businesses").insert(records).execute()
             )
+        await emit(job_id, "Ranking by confidence",
+                   f"Top {len(top_businesses)} results ready", "done", "Ranking by confidence")
 
         # ── Compute data quality from final set ───────────────────────────
         data_quality = compute_data_quality(top_businesses)
