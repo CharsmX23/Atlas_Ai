@@ -77,6 +77,8 @@ function toBusinessResult(b: Record<string, unknown>, index: number): BusinessRe
     verification_status:
       (asStr(b.verification_status) as BusinessResult['verification_status']) || 'partial',
     source_count: asNum(b.source_count, 1),
+    lat: typeof b.lat === 'number' && b.lat !== 0 ? b.lat : undefined,
+    lng: typeof b.lng === 'number' && b.lng !== 0 ? b.lng : undefined,
   }
 }
 

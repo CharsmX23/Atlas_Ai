@@ -41,4 +41,6 @@ export interface BusinessResult {
   is_verified: boolean
   verification_status: 'verified' | 'partial' | 'conflict'
   source_count: number
+  lat?: number
+  lng?: number
 }

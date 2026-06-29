@@ -1,9 +1,15 @@
 'use client'
 
 import { useState, useMemo, useEffect } from 'react'
+import dynamic from 'next/dynamic'
 import type { BusinessResult } from './constants'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Search, MapPin, Phone, Mail, Globe, Clock, Star, ExternalLink, ChevronDown, Check, AlertTriangle, Shield, X, ChevronUp } from 'lucide-react'
+
+const ResultsMap = dynamic(
+  () => import('./ResultsMap').then((m) => m.ResultsMap),
+  { ssr: false, loading: () => null }
+)
 
 interface ResearchStats {
   found?: number
@@ -146,8 +152,11 @@ export function ResultsView({ onReset, onNewMission, results, phase, query, stat
             </div>
           )}
 
-          {/* ── LEFT: business list — below sidebar on mobile, left on desktop ── */}
+          {/* ── LEFT: map + business list ── */}
           <div className="flex-1 min-w-0 order-last md:order-first space-y-3">
+            {filtered.some((b) => b.lat != null && b.lng != null) && (
+              <ResultsMap businesses={filtered} />
+            )}
             {filtered.length === 0 ? (
               <div className="flex flex-col items-center justify-center py-24 gap-4">
                 {baseResults.length === 0 && !waited ? (
