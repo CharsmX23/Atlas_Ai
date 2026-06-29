@@ -435,21 +435,35 @@ _PIPELINE_TIMEOUT   = 15.0
 _PIPELINE_SEM       = 10
 
 
-async def _serper_discover(client: httpx.AsyncClient, query: str) -> list:
-    """Stage 1: Serper /places — structured local businesses, not organic web junk."""
-    try:
-        resp = await client.post(
-            _SERPER_PLACES_URL,
-            headers={"X-API-KEY": SERPER_API_KEY, "Content-Type": "application/json"},
-            json={"q": query, "gl": "us"},
-        )
-        resp.raise_for_status()
-        places = resp.json().get("places", [])
-        print(f"Serper /places: {len(places)} for '{query}'")
-        return places
-    except Exception as e:
-        print(f"Serper /places error: {e}")
-        return []
+async def _serper_discover(client: httpx.AsyncClient, query: str,
+                           lat: float | None = None, lng: float | None = None) -> list:
+    """Stage 1: Serper /places — fetch pages 1+2 in parallel for ~20 results."""
+    payload: dict = {"q": query, "gl": "us", "num": 20}
+    if lat is not None and lng is not None:
+        payload["ll"] = f"@{lat},{lng},14z"
+
+    async def _page(page: int) -> list:
+        try:
+            resp = await client.post(
+                _SERPER_PLACES_URL,
+                headers={"X-API-KEY": SERPER_API_KEY, "Content-Type": "application/json"},
+                json={**payload, "page": page},
+            )
+            resp.raise_for_status()
+            return resp.json().get("places", [])
+        except Exception as e:
+            print(f"Serper /places page {page} error: {e}")
+            return []
+
+    p1, p2 = await asyncio.gather(_page(1), _page(2), return_exceptions=True)
+    combined, seen = [], set()
+    for place in (p1 if isinstance(p1, list) else []) + (p2 if isinstance(p2, list) else []):
+        key = place.get("placeId") or (place.get("title", "") + place.get("address", ""))
+        if key and key not in seen:
+            seen.add(key)
+            combined.append(place)
+    print(f"Serper /places: {len(combined)} combined for '{query}'")
+    return combined
 
 
 async def _resolve_place_id(client: httpx.AsyncClient, place: dict) -> str | None:
@@ -652,7 +666,7 @@ async def agent_google(job_id: str, category: str, location: str, mode: str = "d
                         phone   = _gget(place, "nationalPhoneNumber") or place.get("phoneNumber", "")
                         website = _gget(place, "websiteUri")          or place.get("website", "")
 
-                        if conf < 40 or (not phone and not website):
+                        if conf < 30 or (not phone and not website):
                             continue
 
                         results.append(place_to_business(place, query_terms))
